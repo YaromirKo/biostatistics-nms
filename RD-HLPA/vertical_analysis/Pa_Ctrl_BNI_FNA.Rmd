@@ -1,0 +1,713 @@
+---
+title: "Vertical Analysis Pa: Ctrl, BNI, FNA (hand, machine)"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../BayesianPValue.R")
+```
+
+# Pa (Probability of postural asymmetry)
+
+Threshold 1.5 mm.
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+file_name <- "data/SDU-RDPA-Stat_v2.xlsx"
+sheet <- "SDU-RD-Stat-v2"
+
+my.seed <- 20231201 # reproducible Bayesian fit
+threshold <- 1.5001 # assymetry means > 0mm, i.e. no symmetric rats
+
+myname0 <- "Pa"
+myname <- paste0(myname0, "_Pa_Ctrl_BNI_FNA")
+
+main_dir <- "../" # path to the base folder, containing data and results
+path_rds <- "rds/vertical_analysis/pa_bni_fna_ctrl/" # folder to store the results 
+DESIGN <- "RD" # only reverse design data will be used
+full_rds_path = paste0(main_dir, path_rds)
+
+dir.create(file.path(main_dir, path_rds), showWarnings = FALSE)
+
+data <-
+  file.path(main_dir, file_name) %>% 
+  read_excel(sheet, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+  mutate(
+    RatID = Rat.ID,
+    Side = recode_factor(Operation.side, Left='L', Right='R'),
+    Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+    Treatment.4 = factor(...13),
+    WPre = BW.1,
+    WPost = BW.2,
+    Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+    # Trt4 = ifelse(is.na(Treatment.1) & (!is.na(Treatment.3) & (Treatment.3 != 'Saline')), "Ctrl", Treatment.3)
+  ) %>% 
+  select(
+    RatID, Date, Side, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3,
+    starts_with(c("PA1.", "PA2.", "PA3.", "PA4.", "PA5.", "PA6."))
+  ) %>% 
+  pivot_longer(
+    cols = PA1.1:PA6.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>% 
+  mutate(
+    RatID = factor(RatID),
+    Time = factor(Time, c("1", "2", "3", "4", "5", "6"), c("0h", "3h", "3h20m", "4h", "4h20m", "5h")),
+    Group4 = ifelse(Group3 == 'Ctrl' & Time == '3h' & (!is.na(Treatment.3) & (Treatment.3 != 'Saline')), 'Ctrl', Treatment.3),
+    Group4.Side = ifelse(Group4 != 'Ctrl', paste0(Side, '.', Group4), Group4),
+    Group4 = factor(Group4, c("Ctrl", "Saline", "NTI", "Nal")),
+    Group4.Side = factor(Group4.Side, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal")),
+    Group3 = ifelse(Group3 == 'Ctrl', 'Ctrl', paste0(Side, '.', Group3)),
+    Group3 = factor(Group3, c("Ctrl", "L.BNI", "R.BNI", "L.FNA", "R.FNA")),
+    MPA = abs(PA),
+    Sym = factor(MPA < threshold, c(TRUE, FALSE), c("Sym", "Asym"))
+  ) %>%
+  drop_na("PA") %>%
+  ungroup %>% droplevels(.)
+
+data_hand <-
+  data %>%
+  filter(Measurement.method == "Hand") %>% 
+  droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(Measurement.method == "MP") %>% 
+  droplevels(.)
+
+```
+
+```{r splt_data, echo=FALSE}
+
+data_hand <- data_hand %>% 
+  filter(Time == '0h' | Time == '3h') %>% 
+  droplevels(.)
+data_machine <- data_machine %>%
+  filter(Time == '0h' | Time == '3h') %>%
+  droplevels(.)
+
+```
+
+\|PA\| $\leqslant$ 1.5mm (threshold) are defined as "Symmetric" (Sym) (\|PA\| - Average of all 6 measurements per rat)
+
+Hand data
+
+```{r input2, echo=FALSE}
+
+data_hand %>%
+  arrange(Group3, Time) %>% 
+  group_by(RatID, Group3, Time) %>% 
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Group3, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0h" = 0, "3h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+d1 <- data_hand
+
+```
+
+# (Hand) Analyse Ctrl, BNI, FNA
+
+## Pa: Model Overview
+
+Trials and number of asymmetric rats for the groups
+
+```{r hand_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group3, Time) %>% 
+  group_by(Group3, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>% 
+  mutate(Group3 = fct_inorder(Group3))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Group3), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Group3:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "ctrl_bni_fna_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_pa_MCMC_ppcheck}
+
+plt[["hand ctrl, bni, fna Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand ctrl, bni, fna Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_pa_MCMC_ac}
+
+print( plt[["hand ctrl, bni, fna Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_pa_emm}
+
+emm <- emmeans(m.lat, ~ Group3|Time, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand ctrl, bni, fna Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group3, Time, sep=", ", drop=TRUE)), x = .value, fill = Group3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: ctrl, bni, fna")
+
+print(plt[["Hand ctrl, bni, fna Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_pa_contrasts}
+
+emmc <- rbind(contrast(emm, simple="Group3", method = "trt.vs.ctrl1"),
+              contrast(emm, simple="Time", method = "consec"))
+emm_show(emmc)
+
+```
+
+Contrasts between Groups and Ctrl as a median +- 95% HPDCI:
+
+```{r hand_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["hand ctrl, bni, fna Pa by Group"]] <- emmc %>% emm_inorder %>% filter(Group3 == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast")
+print(plt[["hand ctrl, bni, fna Pa by Group"]])
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctlr_bni_fna_pa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl, BNI, FNA Pa by Time (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Group3, contrast, sep=", ", drop=TRUE)), x = .value, fill = Group3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast by time")
+
+print(plt[["Ctrl, BNI, FNA Pa by Time (hand)"]])
+
+```
+
+## Pa: Contrasts (reverse)
+
+Contrasts BI vs SS as a table:
+
+```{r hand_pa_contrasts_rev}
+
+emmc <- rbind(contrast(emm, simple = "Group3", method = "trt.vs.ctrl1", reverse = TRUE),
+              contrast(emm, simple = "Time", method = "consec"))
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_pa_plot_rev, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl,BNI,FNA Pa by Side (hand) rev"]] <- emmc %>% emm_inorder %>% filter(Group3 == ".") %>% 
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast: Ctrl vs BNI, FNA")
+
+print(plt[["Ctrl,BNI,FNA Pa by Side (hand) rev"]])
+
+```
+
+
+```{r hand_bni_fna_3h_contrasts_pa}
+
+emmc <- contrast(emm, simple = "Group3", method = "consec", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrast 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_bni_fna_3h_all_pa_contrast, echo=FALSE, fig.width = 8}
+
+plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) all (hand)"]] <- emmc %>% emm_inorder %>% 
+  filter(Time == "3h")  %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast, 3h point")
+
+print(plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) all (hand)"]])
+
+```
+
+Contrast 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_bni_fna_3h_pa_contrast, echo=FALSE, fig.width = 8}
+
+plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) (hand)"]] <- emmc %>% emm_inorder %>% 
+  filter(Time == "3h", contrast %in% c("L.BNI - R.BNI", "L.FNA - R.FNA"))  %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast, 3h point")
+
+print(plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) (hand)"]])
+
+```
+
+## Pa Contrast of contrasts
+
+```{r hand_ctrl_bni_fna_contrasts_of_contrasts_pa}
+
+emmc_2 <- contrast(emm, simple = "Time", method = "revpairwise")
+emmc_2 <- contrast(emmc_2, simple = "Group3", method = "consec", reverse = TRUE)
+# 
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_pa_contrast_of_contrasts_bni_fna_sides_groups, echo=FALSE, fig.width = 8}
+
+plt[["Pa Contrast of contrasts BNI, FNA Sides (hand)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast1 %in% c("L.BNI - R.BNI", "L.FNA - R.FNA")) %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast1, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast1)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast of contrasts")
+
+print(plt[["Pa Contrast of contrasts BNI, FNA Sides (hand)"]])
+
+```
+
+Contrast of contrasts for Group vs Ctrl:
+
+```{r hand_pa_contrasts_of_contrasts_group_vs_ctrl}
+
+emmc_2 <- contrast(emm, simple = "Group3", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise", reverse = TRUE)
+
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts BNI, FNA, Ctrl 3h all as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  hand_pa_contrasts_of_contrasts_group_vs_ctrl_all_plot, echo=FALSE, fig.width = 8}
+
+plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h all (hand)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(Time == "3h") %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast of contrasts")
+
+print(plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h all (hand)"]])
+
+```
+
+Contrast of contrasts BNI, FNA, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  hand_pa_contrasts_of_contrasts_group_vs_ctrl_plot, echo=FALSE, fig.width = 8}
+
+plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h (hand)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(Time == "3h", contrast %in% c("(L.BNI - Ctrl) - (R.FNA - Ctrl)", "(R.BNI - Ctrl) - (L.FNA - Ctrl)")) %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast of contrasts")
+
+print(plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h (hand)"]])
+
+```
+
+
+Machine data
+
+```{r input2_machine, echo=FALSE}
+
+data_machine %>%
+  arrange(Group3, Time) %>% 
+  group_by(RatID, Group3, Time) %>% 
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Group3, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0h" = 0, "3h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+d1 <- data_machine
+
+```
+
+# (Machine) Analyse Ctrl, BNI, FNA
+
+## Pa: Model Overview
+
+Trials and number of asymmetric rats for the groups
+
+```{r machine_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group3, Time) %>% 
+  group_by(Group3, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>% 
+  mutate(Group3 = fct_inorder(Group3))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Group3), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Group3:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "machine_ctrl_bni_fna_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_pa_MCMC_ppcheck}
+
+plt[["machine ctrl, bni, fna Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine ctrl, bni, fna Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_pa_MCMC_ac}
+
+print( plt[["machine ctrl, bni, fna Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_pa_emm}
+
+emm <- emmeans(m.lat, ~ Group3|Time, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine ctrl, bni, fna Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group3, Time, sep=", ", drop=TRUE)), x = .value, fill = Group3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: ctrl, bni, fna")
+
+print(plt[["machine ctrl, bni, fna Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_pa_contrasts}
+
+emmc <- rbind(contrast(emm, simple="Group3", method = "trt.vs.ctrl1"),
+              contrast(emm, simple="Time", method = "consec"))
+emm_show(emmc)
+
+```
+
+Contrasts between Groups as a median +- 95% HPDCI:
+
+```{r machine_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine ctrl, bni, fna Pa by Group"]] <- emmc %>% emm_inorder %>% filter(Group3 == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast")
+print(plt[["machine ctrl, bni, fna Pa by Group"]])
+
+```
+
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctlr_bni_fna_pa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl, BNI, FNA Pa by Time (machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Group3, contrast, sep=", ", drop=TRUE)), x = .value, fill = Group3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast by time")
+
+print(plt[["Ctrl, BNI, FNA Pa by Time (machine)"]])
+
+```
+
+## Pa: Contrasts (reverse)
+
+Contrasts BI vs SS as a table:
+
+```{r machine_pa_contrasts_rev}
+
+emmc <- rbind(contrast(emm, simple = "Group3", method = "trt.vs.ctrl1", reverse = TRUE),
+              contrast(emm, simple = "Time", method = "consec"))
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_pa_plot_rev, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl,BNI,FNA Pa by Side (machine) rev"]] <- emmc %>% emm_inorder %>% filter(Group3 == ".") %>% 
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast: Ctrl vs BNI, FNA")
+
+print(plt[["Ctrl,BNI,FNA Pa by Side (machine) rev"]])
+
+```
+
+
+```{r machine_bni_fna_3h_contrasts_pa}
+
+emmc <- contrast(emm, simple = "Group3", method = "consec", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrast 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_bni_fna_3h_all_pa_contrast, echo=FALSE, fig.width = 8}
+
+plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) all (machine)"]] <- emmc %>% emm_inorder %>% 
+  filter(Time == "3h")  %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast, 3h point")
+
+print(plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) all (machine)"]])
+
+```
+
+Contrast 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_bni_fna_3h_pa_contrast, echo=FALSE, fig.width = 8}
+
+plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) (machine)"]] <- emmc %>% emm_inorder %>% 
+  filter(Time == "3h", contrast %in% c("L.BNI - R.BNI", "L.FNA - R.FNA"))  %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast, 3h point")
+
+print(plt[["Pa 3h (L.BNI vs R.BNI), (L.FNA vs R.FNA) (machine)"]])
+
+```
+
+## Pa Contrast of contrasts
+
+```{r machine_ctrl_bni_fna_contrasts_of_contrasts_pa}
+
+emmc_2 <- contrast(emm, simple = "Time", method = "revpairwise")
+emmc_2 <- contrast(emmc_2, simple = "Group3", method = "consec", reverse = TRUE)
+# 
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_pa_contrast_of_contrasts_bni_fna_sides_groups, echo=FALSE, fig.width = 8}
+
+plt[["Pa Contrast of contrasts BNI, FNA Sides (machine)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast1 %in% c("L.BNI - R.BNI", "L.FNA - R.FNA")) %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast1, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast1)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast of contrasts")
+
+print(plt[["Pa Contrast of contrasts BNI, FNA Sides (machine)"]])
+
+```
+
+Contrast of contrasts for Group vs Ctrl:
+
+```{r machine_pa_contrasts_of_contrasts_group_vs_ctrl}
+
+emmc_2 <- contrast(emm, simple = "Group3", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise", reverse = TRUE)
+
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts BNI, FNA, Ctrl 3h all as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  machine_pa_contrasts_of_contrasts_group_vs_ctrl_all_plot, echo=FALSE, fig.width = 8}
+
+plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h all (machine)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(Time == "3h") %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast of contrasts")
+
+print(plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h all (machine)"]])
+
+```
+
+Contrast of contrasts BNI, FNA, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  machine_pa_contrasts_of_contrasts_group_vs_ctrl_plot, echo=FALSE, fig.width = 8}
+
+plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h (machine)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(Time == "3h", contrast %in% c("(L.BNI - Ctrl) - (R.FNA - Ctrl)", "(R.BNI - Ctrl) - (L.FNA - Ctrl)")) %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, Contrast of contrasts")
+
+print(plt[["Pa Contrast of contrasts BNI, FNA, Ctrl 3h (machine)"]])
+
+```
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0(myname0, "_Pa_Ctrl_BNI_FNA")
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```

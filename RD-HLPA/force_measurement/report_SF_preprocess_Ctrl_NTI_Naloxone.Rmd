@@ -1,0 +1,566 @@
+---
+title: 'SF: Read and preprocess raw stretch force measurements Ctrl, NTI, Naloxone'
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+
+source("../BayesianPValue.R")
+
+```
+
+The resistance was measured as the amount of mechanical work $W_{contra}$ and $W_{ipsi}$ to stretch the contra- and ipsilesional hindlimbs, where $W(T_{0-2}) = \int_{t=0}^{2} f(t)$ was stretching  force integrated over stretching distance interval from 0 to 10 mm. Asymmetry was assessed as the contra-/ipsilesional asymmetry index $AI_W = log2(W_{contra} / W_{ipsi})$, and as the difference in work performed by the contra- and ipsilesional hindlimb $\Delta W = (W_{contra} - W_{ipsi})$. The control intact rat showed symmetric $W$ pattern; the $W$ for the left and right limbs were calculated instead of $W_{contra}$ and $W_{ipsi}$ for this animal.
+
+## Read stretch force (SF) data 
+
+Read raw sampled forces and match them with rat's descriptions
+
+```{r config_vars, echo=FALSE}
+
+PATH_DIR_ROOT <- "../data"
+PATH_FOLDER_FORCE_MEASUREMENT <- "../data/force_measurement/" 
+PATH_SF_DATA_CSV <- paste0(PATH_FOLDER_FORCE_MEASUREMENT, "sf_ctrl_nti_nal_data_20230506.csv")
+
+FILE_NAME = '-ForceValues.xlsx'
+PATTERN = paste0('*', FILE_NAME)
+
+DESCRIPTION_FILE_NAME <- "SDU-RDPA-Stat_v2.xlsx"
+SHEET <- "SDU-RD-Stat-v2" # for description
+
+TEST_NUM_FILES <- 62
+
+```
+
+
+```{r help_finctions,  echo=FALSE}
+
+correctDate <- Vectorize(function(date, pattern, sep="-") {
+  dateSplit <- str_split(date, pattern)[[1]]
+  return(paste0(dateSplit[1], sep, dateSplit[2], sep, dateSplit[3]))
+})
+
+read.StretchForce <- function(RatFile, show=FALSE) {
+  ratName <- sub(FILE_NAME, "", basename(RatFile), fixed = TRUE)
+  ratNum <- str_split(ratName, "SDU")[[1]][2]
+  ratName <- paste0("SDU", "-", ratNum)
+  sheetNames <- RatFile %>% 
+    excel_sheets() %>% 
+    as_tibble %>% 
+    filter(grepl(pattern = "F([0-9]+)", value))
+  
+  df <- 
+    map_df(
+      .x = sheetNames$value,
+      ~read_excel(path = RatFile, sheet = .x, range = cell_cols("A:C")),
+      .id = "replication"
+      ) %>% 
+    mutate(RatID = ratName) %>% 
+    relocate(RatID, .before = replication)
+  
+  if(show) print(paste0(ratName, " -> ", toString(count(sheetNames)$n), ", ", count(df)$n))
+  return(df)
+}
+
+my.rwData <- function() {
+  
+  # if(file.exists(PATH_SF_DATA_CSV)) {
+  #   print(paste0("File ", " - ", PATH_SF_DATA_CSV, " - exists"))
+  #   return(read_csv(PATH_SF_DATA_CSV, show_col_types = FALSE))
+  # }
+  print("In process...")
+  
+  sf <- 
+    map_df(
+      .x = list.files(path = PATH_FOLDER_FORCE_MEASUREMENT, pattern = PATTERN, full.names = TRUE),
+      ~read.StretchForce(.x)
+    )
+  
+  if(length(unique(sf$RatID)) == TEST_NUM_FILES) print(paste0(TEST_NUM_FILES, " - ", "OK"))
+  
+  # match rat's description with raw force measurements
+  rats_description <-
+    file.path(PATH_DIR_ROOT, DESCRIPTION_FILE_NAME) %>% 
+    read_excel(SHEET, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+    mutate(
+      RatID = Rat.ID,
+      Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+      Treatment.4 = ...13,
+      WPre = BW.1,
+      WPost = BW.2,
+      Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+    ) %>% 
+     select(
+      RatID, Date, Day, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3, Operation.side
+    ) %>% 
+    filter(Measurement.method == "MP") %>%
+    mutate(
+      Day = replace(Day, which(is.na(Day)), mean(Day, na.rm=TRUE)),
+      Date = as.numeric(as.Date(correctDate(Date, "\\."))),
+      DateD = Date - min(Date),
+      Day = as.numeric(Day),
+      DateD = as.numeric(DateD)
+    )
+  
+  sf <-
+    merge(sf, rats_description, by=c("RatID"), all.x=TRUE, all.y=TRUE, sort=FALSE) %>%
+    drop_na(Treatment.3) %>%
+    filter(replication %in% c(7:12, 19:24, 31:36)) %>%  # 3h, 4h, 5h 
+    pivot_longer(
+      cols = c("Left", "Right"),
+      names_to = c("Side"),
+      values_to = "SF"
+    ) %>%
+    mutate(
+      SF = SF*(-1),
+      Operation.side = recode_factor(Operation.side, Left='L', Right='R'),
+      Period = ifelse(replication %in% c(7:12), "3h", 
+                      ifelse(replication %in% c(19:24), "4h", "5h")),
+      
+      
+      Trt = ifelse(Period == '3h' & Treatment.3 != 'Saline', 'Ctrl',
+                    ifelse(Period == '3h' & Treatment.3 == 'Saline', 'Saline',
+                           ifelse(Period == '4h', Treatment.3,
+                                  ifelse(Period == '5h' & Treatment.3 == 'Saline', Treatment.4, 'NTI.Nal')))),
+      Group3 = ifelse(Trt == "Ctrl" | Period == '4h' & Trt == "Saline", "Ctrl", Trt),
+      Group3 = ifelse(Group3 == 'Ctrl', 'Ctrl', paste0(Operation.side, '.', Trt)),
+      Group3 = factor(Group3, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal", "L.NTI.Nal", "R.NTI.Nal")),
+      Trt = paste0(Period, '.', Trt, '.', Operation.side),
+      Period = factor(Period, c("3h", "4h", "5h")),
+    ) %>% 
+    filter(!(Group3 %in% c("L.Saline", "R.Saline", "L.NTI.Nal", "R.NTI.Nal"))) %>% 
+    ungroup %>% droplevels(.)
+  
+  # write_csv(x = sf, PATH_SF_DATA_CSV)
+  return(sf)
+}
+
+```
+
+```{r}
+
+correctDate <- Vectorize(function(date, pattern, sep="-") {
+  dateSplit <- str_split(date, pattern)[[1]]
+  return(paste0(dateSplit[1], sep, dateSplit[2], sep, dateSplit[3]))
+})
+
+read.StretchForce <- function(RatFile, show=FALSE) {
+  ratName <- sub(FILE_NAME, "", basename(RatFile), fixed = TRUE)
+  ratNum <- str_split(ratName, "SDU")[[1]][2]
+  ratName <- paste0("SDU", "-", ratNum)
+  sheetNames <- RatFile %>% 
+    excel_sheets() %>% 
+    as_tibble %>% 
+    filter(grepl(pattern = "F([0-9]+)", value))
+  
+  df <- 
+    map_df(
+      .x = sheetNames$value,
+      ~read_excel(path = RatFile, sheet = .x, range = cell_cols("A:C")),
+      .id = "replication"
+      ) %>% 
+    mutate(RatID = ratName) %>% 
+    relocate(RatID, .before = replication)
+  
+  if(show) print(paste0(ratName, " -> ", toString(count(sheetNames)$n), ", ", count(df)$n))
+  return(df)
+}
+
+my.rwData <- function() {
+  
+  # if(file.exists(PATH_SF_DATA_CSV)) {
+  #   print(paste0("File ", " - ", PATH_SF_DATA_CSV, " - exists"))
+  #   return(read_csv(PATH_SF_DATA_CSV, show_col_types = FALSE))
+  # }
+  print("In process...")
+  
+  sf <- 
+    map_df(
+      .x = list.files(path = PATH_FOLDER_FORCE_MEASUREMENT, pattern = PATTERN, full.names = TRUE),
+      ~read.StretchForce(.x)
+    )
+  
+  if(length(unique(sf$RatID)) == TEST_NUM_FILES) print(paste0(TEST_NUM_FILES, " - ", "OK"))
+  
+  # match rat's description with raw force measurements
+  rats_description <-
+    file.path(PATH_DIR_ROOT, DESCRIPTION_FILE_NAME) %>% 
+    read_excel(SHEET, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+    mutate(
+      RatID = Rat.ID,
+      Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+      Treatment.4 = ...13,
+      WPre = BW.1,
+      WPost = BW.2,
+      Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+    ) %>% 
+     select(
+      RatID, Date, Day, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3, Operation.side
+    ) %>% 
+    filter(Measurement.method == "MP") %>%
+    mutate(
+      Day = replace(Day, which(is.na(Day)), mean(Day, na.rm=TRUE)),
+      Date = as.numeric(as.Date(correctDate(Date, "\\."))),
+      DateD = Date - min(Date),
+      Day = as.numeric(Day),
+      DateD = as.numeric(DateD)
+    )
+  
+  sf <-
+    merge(sf, rats_description, by=c("RatID"), all.x=TRUE, all.y=TRUE, sort=FALSE) %>%
+    drop_na(Treatment.3) %>%
+    filter(replication %in% c(7:12, 19:24, 31:36)) %>%  # 3h, 4h, 5h 
+    pivot_longer(
+      cols = c("Left", "Right"),
+      names_to = c("Side"),
+      values_to = "SF"
+    ) %>%
+    mutate(
+      SF = SF*(-1),
+      Operation.side = recode_factor(Operation.side, Left='L', Right='R'),
+      Period = ifelse(replication %in% c(7:12), "3h", 
+                      ifelse(replication %in% c(19:24), "4h", "5h")),
+      
+      
+      Trt = ifelse(Period == '3h' & Treatment.3 != 'Saline', 'Ctrl',
+                    ifelse(Period == '3h' & Treatment.3 == 'Saline', 'Saline',
+                           ifelse(Period == '4h', Treatment.3,
+                                  ifelse(Period == '5h' & Treatment.3 == 'Saline', Treatment.4, 'NTI.Nal')))),
+      Group3 = ifelse(Trt == "Ctrl" | Period == '4h' & Trt == "Saline", "Ctrl", Trt),
+      # Group3 = ifelse(Group3 == 'Ctrl', 'Ctrl', paste0(Operation.side, '.', Trt)),
+      # Group3 = factor(Group3, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal", "L.NTI.Nal", "R.NTI.Nal")),
+      Trt = paste0(Period, '.', Trt, '.', Operation.side),
+      Period = factor(Period, c("3h", "4h", "5h")),
+    ) %>% 
+    filter(!(Group3 %in% c("Saline", "NTI.Nal"))) %>% 
+    ungroup %>% droplevels(.)  %>% 
+    pivot_wider(
+      names_from = Side,
+      values_from = SF
+    )
+  
+  write_csv(x = sf, PATH_SF_DATA_CSV)
+  return(sf)
+}
+```
+
+
+
+```{r input, results='hide'}
+
+myspan <- 0.4
+myname0 <- paste0("SF loess(symmetric span=", myspan, ")")
+
+data <- my.rwData()
+
+sf <- 
+  data %>%
+  rename(MS = Side, repN = replication, OperationSide = Operation.side) %>% 
+  select(!Measurement.method) %>% 
+  mutate(
+    RatID = factor(RatID),
+    MS = factor(MS, c("Left", "Right"), c("L", "R")),
+    Later = factor(OperationSide == MS, c(FALSE, TRUE), c("Contra", "Ipsi")),
+    Trt = factor(Trt),
+    repN = factor(as.integer(repN))
+  )
+
+# sf[!complete.cases(sf), c("RatID", "Op3", "Trt", "repN", "Later", "SF")] # Any unmatched rats? Any unmeasured forces?
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r dataset_n, echo=FALSE}
+
+d.sum <- sf %>% 
+  arrange(Group3, Period, OperationSide) %>% 
+  group_by(Group3, Period, OperationSide) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  pivot_wider(names_from=c(Period), values_from = rats)
+
+d.sum %>% 
+  flextable %>% 
+  fontsize(part = "header", size = 9) %>% 
+  autofit
+
+```
+
+## SF, 0-2 sec: Visual inspection of smoothing
+
+<!-- Filter 0-2 sec measurements, taking extra 0.5s for better smoothing. -->
+
+```{r SF_combo_dta}
+
+mydta <- sf %>%
+  filter(!is.na(SF)) %>%
+  droplevels(.) %>%
+  mutate(figName = paste0(RatID, ", ", Trt, ", replicate ", repN)) %>%
+  select(figName, Later, Time, SF) %>%
+  # filter(figName == "SDU-068, Ctrl, replicate 9") %>%
+  group_by(figName)
+
+```
+
+Stretch force figure combining Contra, Ipsi and their difference.
+
+```{r example_12_rep, echo=FALSE, fig.width=12, fig.height=8}
+
+# myspan <- 0.4
+
+name_fig <- "SDU-068, 3h.Ctrl.R, replicate 9"
+name_plt <- paste0("raw ", name_fig)
+
+plt[[name_plt]] <- 
+  mydta %>%
+  filter( figName == name_fig) %>%
+  pivot_wider(names_from = Later, values_from = SF) %>%
+  mutate( 
+    "Contra - Ipsi" = Contra - Ipsi
+  ) %>%
+  pivot_longer(c("Contra", "Ipsi", "Contra - Ipsi"), names_to = "Limbs", values_to = "SF") %>% 
+  ggplot(aes(x = Time, y = SF, group = Limbs, col = Limbs)) + 
+  geom_line() + 
+  geom_smooth(
+    formula = y ~ x, 
+    aes(col = paste0("loess ", myspan)), 
+    method ="loess", 
+    span = myspan, 
+    se = FALSE, 
+    method.args = list(family="symmetric")
+  ) +
+  labs(
+    title = paste0(myname0, ", ", name_fig), 
+    x = "Time (sec)", 
+    y = "Stretching force (mg)"
+  )
+
+print(plt[[name_plt]])
+
+```
+
+```{r}
+
+# doc <- read_pptx()
+# 
+# for(nm in names(plt)) {
+#   doc <- doc %>%
+#     add_slide(
+#       layout = "Title and Content",
+#       master = "Office Theme"
+#     ) %>%
+#     ph_with(
+#       value = rvg::dml(ggobj = plt[[nm]]),
+#       location = ph_location_type(
+#         type = "body"
+#         #, width=S_width,
+#         # height=S_height
+#         ),
+#       bg = "transparent"
+#     ) %>%
+#     ph_with(
+#       value = nm,
+#       location = ph_location_type(type = "title")
+#     )
+# }
+# 
+# doc %>% print(target = paste0("SF loess(symmetric span0.4)", ".pptx"))
+
+```
+
+Visually check the smoothing by loess(), varying the "span" to see if alternatives are better than our choice. 
+
+```{r check_loess, include=FALSE}
+
+# myspan.test <- 0.4
+# 
+# junk <- mydta %>%
+#   group_map( ~{
+#     theName <- paste(.y)
+#     ggplot(data=.x, aes(y = SF, x = Time, group = Later, col = Later)) + 
+#       geom_line() + 
+#       geom_smooth(formula = y ~ x, aes(col = paste0(myspan.test + 0.1)), method="loess", span = myspan.test + 0.1, se=FALSE, method.args=list(family="symmetric")) +
+#       geom_smooth(formula = y ~ x, aes(col = paste0(myspan.test - 0.1)), method="loess", span = myspan.test - 0.1, se=FALSE, method.args=list(family="symmetric")) +
+#       geom_smooth(formula = y ~ x, aes(col = paste0(myspan.test)), method="loess", span=myspan.test, se=FALSE, method.args=list(family="symmetric")) +
+#       # theme(legend.position = "none") +
+#       labs(title=paste(myname0, theName), x="Time (sec)", y="Stretching force (mg)")
+#   } ) %>% 
+#   setNames(unique(sort(mydta$figName)))
+# 
+# mydta %>% n_groups()
+
+```
+
+```{r write_pptx_check_loess, echo=FALSE, fig.width=12, fig.height=8}
+
+# for(nm in unique(mydta$figName)) {
+#   print(junk[[nm]])
+# }
+# 
+# doc <- read_pptx()
+# 
+# for(nm in unique(mydta$figName)) {
+#   doc <- doc %>%
+#     add_slide(
+#       layout = "Title and Content",
+#       master = "Office Theme"
+#     ) %>%
+#     ph_with(
+#       value = rvg::dml(ggobj = junk[[nm]]),
+#       location = ph_location_type(
+#         type = "body"
+#         #, width=S_width,
+#         # height=S_height
+#         ),
+#       bg = "transparent"
+#     ) %>%
+#     ph_with(
+#       value = nm,
+#       location = ph_location_type(type = "title")
+#     )
+# }
+# doc %>% print(target = paste0(myname0, "_0.4_.pptx"))
+
+```
+
+Define smoother for all Time points.
+
+```{r smoother_W_AI}
+
+# 0-1 0.4-1 1-2 0-2 0.4-2
+
+smoother_W <- function(dta, ...) {
+
+  # dtaF <- dta %>% filter(Time < 10.5, !is.na(SF))
+
+  dtaF <- dta %>% filter(!is.na(SF))
+
+  if(nrow(dtaF) < 1 | ncol(dtaF) < 2) {
+    print(dta)
+    return(data.frame())
+  }
+
+  my.sm <- loess(SF~Time, data=dtaF, family="symmetric", span=myspan)
+
+  i_0_1  <- integrate(function(x) predict(my.sm, newdata=x), 0, 1)
+  i_0_4_1  <- integrate(function(x) predict(my.sm, newdata=x), 0.4, 1)
+  i_1_2 <- integrate(function(x) predict(my.sm, newdata=x), 1, 2)
+  i_0_2 <- integrate(function(x) predict(my.sm, newdata=x), 0, 2)
+  i_0_4_2 <- integrate(function(x) predict(my.sm, newdata=x), 0.4, 2)
+
+  data.frame(
+    dT = c(
+      "T_0_1",
+      "T_0.4_1",
+      "T_1_2",
+      "T_0_2",
+      "T_0.4_2"
+      ),
+    W = c(
+      i_0_1$value,
+      i_0_4_1$value,
+      i_1_2$value,
+      i_0_2$value,
+      i_0_4_2$value
+      )
+  )
+}
+
+```
+
+Remove unneded columns from SF dataset
+
+```{r clean_SF}
+
+sf_ai_dw <-
+  sf %>%
+  # filter(RatID == "TBI-250", Trt %in% c("UBI.R")) %>%
+  select(Trt, OperationSide, Group3, Period, RatID, repN, MS, Later, Day, WPost, DateD, Time, SF) %>%
+  ungroup %>%
+  arrange(Trt, OperationSide, RatID, repN, Later, Time)
+
+```
+
+Compute work (W) as integrals (0-1 sec, 0.4-1 sec, ... ) of smoothed force measurements. dW = W_Contra - W_Ipsi
+
+```{r compute_W_CI}
+
+sf_CI_dW <- sf_ai_dw %>%
+  select( -MS ) %>%
+  group_by(Trt, OperationSide, Group3, Period, RatID, repN, Day, WPost, DateD) %>%
+  pivot_wider(names_from = Later, values_from = SF) %>%
+  mutate( SF = Contra - Ipsi ) %>%
+  group_modify(smoother_W) %>%
+  ungroup %>%
+  droplevels(.)
+
+```
+
+Compute AI = log2(Contra/Ipsi) using integrals (0-1 sec, 0.4-1 sec, ...) of smoothed force measurements.
+
+```{r compute_AI_CI}
+
+sf_CI_AI <- sf_ai_dw %>%
+  select( -MS ) %>%
+  group_by(Trt, OperationSide, Group3, Period, RatID, repN, Later, Day, WPost, DateD) %>%
+  group_modify(smoother_W) %>%
+  ungroup %>%
+  group_by(RatID, Trt, repN, dT) %>%
+  pivot_wider(names_from = Later, values_from = W) %>%
+  # spread(Later, W) %>%
+  mutate( AI = log2( Contra / Ipsi ) ) %>%
+  ungroup %>%
+  droplevels(.)
+
+```
+
+Compute work (W) as integrals (0-1 sec, 0.4-1 sec, ...) of smoothed force measurements. dW = W_Left - W_Right
+
+```{r compute_W_LR}
+
+sf_LR_dW <- sf_ai_dw %>%
+  select( -Later ) %>%
+  group_by(Trt, OperationSide, Group3, Period, RatID, repN, Day, WPost, DateD) %>%
+  pivot_wider(names_from = MS, values_from = SF) %>%
+  # spread(MS, SF) %>%
+  mutate( SF = L - R ) %>%
+  group_modify(smoother_W) %>%
+  ungroup %>%
+  droplevels(.)
+
+```
+
+Compute AI = log2(Left/Right) using integrals (0-1 sec, 0.4-1 sec, ...) of smoothed force measurements.
+
+```{r compute_AI_LR}
+
+sf_LR_AI <- sf_ai_dw %>%
+  select( -Later ) %>%
+  group_by(Trt, OperationSide, Group3, Period, RatID, repN, MS, Day, WPost, DateD) %>%
+  group_modify(smoother_W) %>%
+  ungroup %>%
+  group_by(RatID, Trt, repN, dT) %>%
+  pivot_wider(names_from = MS, values_from = W) %>%
+  # spread(MS, W) %>%
+  mutate( AI = log2( L / R ) ) %>%
+  ungroup %>%
+  droplevels(.)
+
+```
+
+Save preprocessed SF
+
+```{r smooth}
+
+myname <- paste0("SF Sp 0-1 0.4-1 1-2 0-2 0.4-2 loess(symmetric span", myspan, ")")
+
+save(sf_CI_dW, sf_CI_AI, sf_LR_dW, sf_LR_AI, sf, file=paste0(myname, "_Ctrl_NTI_Nal_v3.RData"))
+
+```

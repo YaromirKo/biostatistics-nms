@@ -1,0 +1,1210 @@
+---
+title: "Vertical Analysis MPA: Ctrl+Saline, NTI, Nalozone (hand, machine)"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../BayesianPValue.R")
+```
+
+# MPA (Magnitude of Postural asymmetry)
+
+Values in “+”.
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+file_name <- "data/SDU-RDPA-Stat_v2.xlsx"
+sheet <- "SDU-RD-Stat-v2"
+
+my.seed <- 20230403 # reproducible Bayesian fit
+
+myname0 <- "MPA"
+
+main_dir <- "../" # path to the base folder, containing data and results
+path_rds <- "rds/vertical_analysis/mpa_ctrl_nti_nal/" # folder to store the results 
+DESIGN <- "RD" # only reverse design data will be used
+full_rds_path = paste0(main_dir, path_rds)
+
+dir.create(file.path(main_dir, path_rds), showWarnings = FALSE)
+
+data <-
+  file.path(main_dir, file_name) %>% 
+  read_excel(sheet, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+  mutate(
+    RatID = Rat.ID,
+    Side = recode_factor(Operation.side, Left='L', Right='R'),
+    Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+    Treatment.4 = ...13,
+    WPre = BW.1,
+    WPost = BW.2,
+    Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+  ) %>%
+  drop_na("Treatment.3") %>% 
+  select(
+    RatID, Date, Side, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3,
+    starts_with(c("PA1.", "PA2.", "PA3.", "PA4.", "PA5.", "PA6."))
+  ) %>% 
+  pivot_longer(
+    cols = PA1.1:PA6.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>% 
+  mutate(
+    RatID = factor(RatID),
+    Time = factor(Time, c("1", "2", "3", "4", "5", "6"), c("0h", "3h", "3h20m", "4h", "4h20m", "5h")),
+    MPA = abs(PA)
+  ) %>%
+  filter(Time %in% c("3h", "4h", "5h")) %>% 
+  mutate(
+    Group4 = ifelse(Time == '3h' & Treatment.3 != 'Saline', 'Ctrl',
+                    ifelse(Time == '3h' & Treatment.3 == 'Saline', 'Saline',
+                           ifelse(Time == '4h', Treatment.3, 
+                                  ifelse(Time == '5h' & Treatment.3 == 'Saline', Treatment.4, 'NTI.Nal')))),
+    
+    Group4.Side = ifelse(Group4 != 'Ctrl', paste0(Side, '.', Group4), Group4),
+    
+    # Inj3 = ifelse(Group4 %in% c("Ctrl", "Saline"), "Ctrl", Group4),
+    # Group4 = ifelse(Group4 == "Ctrl", "Ctrl", paste0(Side, ".", Inj3)),
+    # Group4.Side = factor(Group4.Side, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal", "L.NTI.Nal", "R.NTI.Nal")),
+    Inj3 = ifelse(Group4 == "Ctrl" | Time == "4h" & Group4 == "Saline", "Ctrl", Group4),
+    Inj3.Side = ifelse(Inj3 == "Ctrl", "Ctrl", paste0(Side, ".", Group4)),
+    Inj3.Side = factor(Inj3.Side, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal", "L.NTI.Nal", "R.NTI.Nal"))
+    
+    ) %>% 
+  filter(!(Inj3 %in% c("Saline", "NTI.Nal"))) %>% 
+  drop_na("PA") %>%
+  ungroup %>% droplevels(.)
+
+data_hand <-
+  data %>%
+  filter(Measurement.method == "Hand") %>% 
+  droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(Measurement.method == "MP") %>% 
+  droplevels(.)
+
+```
+
+```{r input2_all_data_hand, echo=FALSE}
+
+data_hand %>%
+  arrange(Inj3.Side, Time, Side) %>% 
+  group_by(Inj3.Side, Time, Side) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+
+```{r, splt_data, echo=FALSE}
+
+data_hand_4h <- data_hand %>% 
+  filter(Time %in% c("3h", "4h")) %>% 
+  droplevels(.)
+
+data_machine_4h <- data_machine %>% 
+  filter(Time %in% c("3h", "4h")) %>% 
+  droplevels(.)
+
+```
+
+
+# Ctrl (3h + Saline(4h)) vs NTI [L=5, R=8], Naloxone [L=7, R=4]:
+In the control group, only those rats that were not injected with anything and with asymmetry > 1.5 mm.
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2, echo=FALSE}
+
+data_hand_4h %>%
+  arrange(Inj3.Side, Time) %>% 
+  group_by(Inj3.Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+```{r input2_rats, echo=FALSE} 
+
+data_hand_4h %>%
+  arrange(Inj3.Side) %>% 
+  group_by(Inj3.Side) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  # pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+# (Hand) Analyse Ctrl vs NTI[L=5, R=8], Naloxone[L=7, R=4]
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r hand_ctrl_nti_nal_mpa_check_prior}
+
+d1 <- data_hand_4h
+
+myname <- paste0(myname0, "_Ctrl_NTI_Nal_Hand")
+
+std.prior <- brm(
+  data = d1,
+  # family = student,
+  # MPA ~ 0 + Inj3.Side + (1|RatID),
+  # prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+  #         prior(normal(0, 3), class = "b")),
+  family = gaussian,
+   bf(
+     MPA ~ 0 + Inj3.Side + (1|RatID),
+     sigma ~ 0 + Inj3.Side
+   ),
+  prior = c(prior(normal(0, 3), class = "b"),
+            prior(normal(0, 3), class = "b", dpar="sigma")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(full_rds_path, "ctrl_nti_nal_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Inj3.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl vs NTI vs Nal MPA prior vs data (hand)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl vs NTI vs Nal MPA prior pp_check (hand)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior vs data (hand)"]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior pp_check (hand)"]])
+
+```
+
+Model fit and QC:
+
+```{r hand_ctrl_nti_nal_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "ctrl_nti_nal_model_summary.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ctrl_nti_nal_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl vs NTI vs Nal MPA pp_check (hand)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl vs NTI vs Nal MPA pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r hand_ctrl_nti_nal_mpa_MCMC_ac}
+
+plt[["Ctrl vs NTI vs Nal MPA ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl vs NTI vs Nal MPA ac (hand)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r hand_ctrl_nti_nal_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Inj3.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_nti_nal_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (hand)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Inj3.Side, sep=", ", drop=TRUE)), x = .value, fill = Inj3.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl vs NTI vs Nal")
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (hand)"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_hand_ctrl_nti_nal_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (hand) with Data Points"]] <- 
+  plt[["Ctrl vs NTI vs Nal MPA emm (hand)"]] +
+    geom_point(
+      pch = 4,
+      position = position_nudge(y=0.15),
+      data = {
+        d1 %>%
+          group_by(RatID, Inj3.Side) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value))
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (hand) with Data Points"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ctrl_nti_nal_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_nti_nal_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (hand)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs NTI, Nal)")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (hand)"]])
+
+```
+
+## MPA: Contrasts (rev)
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ctrl_nti_nal_mpa_contrasts_rev}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_nti_nal_mpa_plot_rev, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (hand) rev"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: NTI, Nal vs Ctrl")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (hand) rev"]])
+
+```
+
+## MPA Contrast of contrasts
+
+Group vs Ctrl
+
+```{r hand_ctrl_nti_nal_contrasts_of_contrasts}
+
+emmc_2 <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise")
+
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl all as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  hand_mpa_contrasts_of_contrasts_group_vs_ctrl_all_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (hand)"]] <- emmc_2 %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (hand)"]])
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  hand_mpa_contrasts_of_contrasts_group_vs_ctrl_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (hand)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast %in% c("(L.NTI - Ctrl) - (R.Nal - Ctrl)", "(R.NTI - Ctrl) - (L.Nal - Ctrl)")) %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (hand)"]])
+
+```
+
+
+# Ctrl (3h + Saline(4h)) vs NTI [L=8, R=8], Naloxone [L=7, R=7]:
+In the control group, only those rats that were not injected with anything and with asymmetry > 1.5 mm.
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_3_3, echo=FALSE}
+
+data_hand %>%
+  arrange(Inj3.Side, Time) %>% 
+  group_by(Inj3.Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+```{r input2_rats_3_3, echo=FALSE} 
+
+data_hand %>%
+  arrange(Inj3.Side) %>% 
+  group_by(Inj3.Side) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  # pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+# (Hand) Analyse Ctrl vs NTI[L=8, R=8], Naloxone[L=7, R=8]
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r hand_ctrl_nti_nal_3_3_mpa_check_prior}
+
+d1 <- data_hand
+
+myname <- paste0(myname0, "_Ctrl_NTI_Nal_plus_Hand")
+
+std.prior <- brm(
+  data = d1,
+  # family = student,
+  # MPA ~ 0 + Inj3.Side + (1|RatID),
+  # prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+  #         prior(normal(0, 3), class = "b")),
+  family = gaussian,
+   bf(
+     MPA ~ 0 + Inj3.Side + (1|RatID),
+     sigma ~ 0 + Inj3.Side
+   ),
+  prior = c(prior(normal(0, 3), class = "b"),
+            prior(normal(0, 3), class = "b", dpar="sigma")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(full_rds_path, "ctrl_nti_nal_plus_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Inj3.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl vs NTI vs Nal MPA prior vs data (hand) plus"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl vs NTI vs Nal MPA prior pp_check (hand) plus"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior vs data (hand) plus"]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior pp_check (hand) plus"]])
+
+```
+
+Model fit and QC:
+
+```{r hand_ctrl_nti_nal_plus_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "ctrl_nti_nal_plus_model_summary.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ctrl_nti_nal_plus_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl vs NTI vs Nal MPA pp_check (hand) plus"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl vs NTI vs Nal MPA pp_check (hand) plus"]])
+
+```
+
+Autocorrelations
+
+```{r hand_ctrl_nti_nal_plus_mpa_MCMC_ac}
+
+plt[["Ctrl vs NTI vs Nal MPA ac (hand) plus"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl vs NTI vs Nal MPA ac (hand) plus"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r hand_ctrl_nti_nal_plus_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Inj3.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_nti_nal_plus_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (hand) plus"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Inj3.Side, sep=", ", drop=TRUE)), x = .value, fill = Inj3.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl vs NTI vs Nal")
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (hand) plus"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_hand_ctrl_nti_nal_plus_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (hand) with Data Points plus"]] <- 
+  plt[["Ctrl vs NTI vs Nal MPA emm (hand) plus"]] +
+    geom_point(
+      pch = 4,
+      position = position_nudge(y=0.15),
+      data = {
+        d1 %>%
+          group_by(RatID, Inj3.Side) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value))
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (hand) with Data Points plus"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ctrl_nti_nal_plus_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_nti_nal_plus_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (hand) plus"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs NTI, Nal)")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (hand) plus"]])
+
+```
+
+## MPA: Contrasts (rev)
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ctrl_nti_nal_plus_mpa_contrasts_rev}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_nti_nal_plus_mpa_plot_rev, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (hand) plus rev"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: NTI, Nal vs Ctrl")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (hand) plus rev"]])
+
+```
+
+## MPA Contrast of contrasts
+
+Group vs Ctrl
+
+```{r hand_ctrl_nti_nal_plus_contrasts_of_contrasts}
+
+emmc_2 <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise")
+
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl all as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  hand_mpa_contrasts_of_contrasts_group_vs_ctrl_all_plus_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (hand) plus"]] <- emmc_2 %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (hand) plus"]])
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  hand_mpa_contrasts_of_contrasts_group_vs_ctrl_plus_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (hand) plus"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast %in% c("(L.NTI - Ctrl) - (R.Nal - Ctrl)", "(R.NTI - Ctrl) - (L.Nal - Ctrl)")) %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (hand) plus"]])
+
+```
+
+
+
+# Ctrl (3h + Saline(4h)) vs NTI [L=5, R=8], Naloxone [L=7, R=4]:
+In the control group, only those rats that were not injected with anything and with asymmetry > 1.5 mm.
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_machine, echo=FALSE}
+
+data_machine_4h %>%
+  arrange(Inj3.Side, Time) %>% 
+  group_by(Inj3.Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+```{r input2_rats_machine, echo=FALSE} 
+
+data_machine_4h %>%
+  arrange(Inj3.Side) %>% 
+  group_by(Inj3.Side) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  # pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+# (Machine) Analyse Ctrl vs NTI[L=5, R=8], Naloxone[L=7, R=4]
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r machine_ctrl_nti_nal_mpa_check_prior}
+
+d1 <- data_machine_4h
+
+myname <- paste0(myname0, "_Ctrl_NTI_Nal_machine")
+
+std.prior <- brm(
+  data = d1,
+  # family = student,
+  # MPA ~ 0 + Inj3.Side + (1|RatID),
+  # prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+  #         prior(normal(0, 3), class = "b")),
+  family = gaussian,
+   bf(
+     MPA ~ 0 + Inj3.Side + (1|RatID),
+     sigma ~ 0 + Inj3.Side
+   ),
+  prior = c(prior(normal(0, 3), class = "b"),
+            prior(normal(0, 3), class = "b", dpar="sigma")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(full_rds_path, "machine_ctrl_nti_nal_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Inj3.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl vs NTI vs Nal MPA prior vs data (machine)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl vs NTI vs Nal MPA prior pp_check (machine)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior vs data (machine)"]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior pp_check (machine)"]])
+
+```
+
+Model fit and QC:
+
+```{r machine_ctrl_nti_nal_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "machine_ctrl_nti_nal_model_summary.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_ctrl_nti_nal_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl vs NTI vs Nal MPA pp_check (machine)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl vs NTI vs Nal MPA pp_check (machine)"]])
+
+```
+
+Autocorrelations
+
+```{r machine_ctrl_nti_nal_mpa_MCMC_ac}
+
+plt[["Ctrl vs NTI vs Nal MPA ac (machine)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl vs NTI vs Nal MPA ac (machine)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r machine_ctrl_nti_nal_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Inj3.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctrl_nti_nal_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (machine)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Inj3.Side, sep=", ", drop=TRUE)), x = .value, fill = Inj3.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl vs NTI vs Nal")
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (machine)"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_machine_ctrl_nti_nal_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (machine) with Data Points"]] <- 
+  plt[["Ctrl vs NTI vs Nal MPA emm (machine)"]] +
+    geom_point(
+      pch = 4,
+      position = position_nudge(y=0.15),
+      data = {
+        d1 %>%
+          group_by(RatID, Inj3.Side) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value))
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (machine) with Data Points"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r machine_ctrl_nti_nal_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctrl_nti_nal_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (machine)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs NTI, Nal)")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (machine)"]])
+
+```
+
+## MPA: Contrasts (rev)
+
+Contrasts BI vs SS as a table:
+
+```{r machine_ctrl_nti_nal_mpa_contrasts_rev}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctrl_nti_nal_mpa_plot_rev, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (machine) rev"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: NTI, Nal vs Ctrl")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (machine) rev"]])
+
+```
+
+## MPA Contrast of contrasts
+
+Group vs Ctrl
+
+```{r machine_ctrl_nti_nal_contrasts_of_contrasts}
+
+emmc_2 <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise")
+
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl all as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  machine_mpa_contrasts_of_contrasts_group_vs_ctrl_all_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (machine)"]] <- emmc_2 %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (machine)"]])
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  machine_mpa_contrasts_of_contrasts_group_vs_ctrl_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (machine)"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast %in% c("(L.NTI - Ctrl) - (R.Nal - Ctrl)", "(R.NTI - Ctrl) - (L.Nal - Ctrl)")) %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (machine)"]])
+
+```
+
+
+# Ctrl (3h + Saline(4h)) vs NTI [L=8, R=8], Naloxone [L=7, R=7]:
+In the control group, only those rats that were not injected with anything and with asymmetry > 1.5 mm.
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_3_3_machine, echo=FALSE}
+
+data_machine %>%
+  arrange(Inj3.Side, Time) %>% 
+  group_by(Inj3.Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+```{r input2_rats_3_3_machine, echo=FALSE} 
+
+data_machine %>%
+  arrange(Inj3.Side) %>% 
+  group_by(Inj3.Side) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  # pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+# (Machine) Analyse Ctrl vs NTI[L=8, R=8], Naloxone[L=7, R=8]
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r machine_ctrl_nti_nal_3_3_mpa_check_prior}
+
+d1 <- data_hand
+
+myname <- paste0(myname0, "_Ctrl_NTI_Nal_plus_machine")
+
+std.prior <- brm(
+  data = d1,
+  # family = student,
+  # MPA ~ 0 + Inj3.Side + (1|RatID),
+  # prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+  #         prior(normal(0, 3), class = "b")),
+  family = gaussian,
+   bf(
+     MPA ~ 0 + Inj3.Side + (1|RatID),
+     sigma ~ 0 + Inj3.Side
+   ),
+  prior = c(prior(normal(0, 3), class = "b"),
+            prior(normal(0, 3), class = "b", dpar="sigma")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(full_rds_path, "machine_ctrl_nti_nal_plus_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Inj3.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl vs NTI vs Nal MPA prior vs data (machine) plus"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl vs NTI vs Nal MPA prior pp_check (machine) plus"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior vs data (machine) plus"]])
+print(plt[["Ctrl vs NTI vs Nal MPA prior pp_check (machine) plus"]])
+
+```
+
+Model fit and QC:
+
+```{r machine_ctrl_nti_nal_plus_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "machine_ctrl_nti_nal_plus_model_summary.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_ctrl_nti_nal_plus_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl vs NTI vs Nal MPA pp_check (machine) plus"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl vs NTI vs Nal MPA pp_check (machine) plus"]])
+
+```
+
+Autocorrelations
+
+```{r machine_ctrl_nti_nal_plus_mpa_MCMC_ac}
+
+plt[["Ctrl vs NTI vs Nal MPA ac (machine) plus"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl vs NTI vs Nal MPA ac (machine) plus"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r machine_ctrl_nti_nal_plus_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Inj3.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctrl_nti_nal_plus_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (machine) plus"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Inj3.Side, sep=", ", drop=TRUE)), x = .value, fill = Inj3.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl vs NTI vs Nal")
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (machine) plus"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_machine_ctrl_nti_nal_plus_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["Ctrl vs NTI vs Nal MPA emm (machine) with Data Points plus"]] <- 
+  plt[["Ctrl vs NTI vs Nal MPA emm (machine) plus"]] +
+    geom_point(
+      pch = 4,
+      position = position_nudge(y=0.15),
+      data = {
+        d1 %>%
+          group_by(RatID, Inj3.Side) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value))
+
+print(plt[["Ctrl vs NTI vs Nal MPA emm (machine) with Data Points plus"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r machine_ctrl_nti_nal_plus_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctrl_nti_nal_plus_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (machine) plus"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs NTI, Nal)")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (machine) plus"]])
+
+```
+
+## MPA: Contrasts (rev)
+
+Contrasts BI vs SS as a table:
+
+```{r machine_ctrl_nti_nal_plus_mpa_contrasts_rev}
+
+emmc <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl1", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ctrl_nti_nal_plus_mpa_plot_rev, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl vs NTI vs Nal MPA by Side (machine) plus rev"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: NTI, Nal vs Ctrl")
+
+print(plt[["Ctrl vs NTI vs Nal MPA by Side (machine) plus rev"]])
+
+```
+
+
+## MPA Contrast of contrasts
+
+Group vs Ctrl
+
+```{r machine_ctrl_nti_nal_plus_contrasts_of_contrasts}
+
+emmc_2 <- contrast(emm, simple = "Inj3.Side", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise")
+
+emm_show(emmc_2)
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl all as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  machine_mpa_contrasts_of_contrasts_group_vs_ctrl_plus_all_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (machine) plus"]] <- emmc_2 %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl all (machine) plus"]])
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  machine_mpa_contrasts_of_contrasts_group_vs_ctrl_plus_plot, echo=FALSE, fig.width = 8}
+
+plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (machine) plus"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast %in% c("(L.NTI - Ctrl) - (R.Nal - Ctrl)", "(R.NTI - Ctrl) - (L.Nal - Ctrl)")) %>%
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, Contrast of contrasts")
+
+print(plt[["MPA Contrast of contrasts NTI, Naloxone vs Ctrl (machine) plus"]])
+
+```
+
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0(myname0, "_Ctrl_NTI_Nal")
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```

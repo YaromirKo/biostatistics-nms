@@ -1,0 +1,305 @@
+---
+title: "Correlation MPA and SF, W, CI"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+
+source("BayesianPValue.R")
+library(ggpubr)
+library(ggrepel)
+
+```
+
+# Read data
+
+```{r input}
+
+file_name <- "data/SDU-RDPA-Stat_v2.xlsx"
+sheet <- "SDU-RD-Stat-v2"
+
+my.seed <- 20231201 # reproducible Bayesian fit
+
+myname0 <- "MPA"
+
+main_dir <- "./" # path to the base folder, containing data and results
+path_rds <- "rds/vertical_analysis/mpa_bni_fna_ctrl/" # folder to store the results
+full_rds_path = paste0(main_dir, path_rds)
+
+dir.create(file.path(main_dir, path_rds), showWarnings = FALSE)
+
+data <-
+  file.path(main_dir, file_name) %>% 
+  read_excel(sheet, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+  mutate(
+    RatID = Rat.ID,
+    Side = recode_factor(Operation.side, Left='L', Right='R'),
+    OperationSide = recode_factor(Operation.side, Left='L', Right='R'),
+    Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+    Treatment.4 = factor(...13),
+    WPre = BW.1,
+    WPost = BW.2,
+    Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+  ) %>% 
+  select(
+    RatID, Date, Side, OperationSide, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3,
+    starts_with(c("PA1.", "PA2.", "PA3.", "PA4.", "PA5.", "PA6."))
+  ) %>% 
+  pivot_longer(
+    cols = PA1.1:PA6.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>% 
+  mutate(
+    RatID = factor(RatID),
+    Time = factor(Time, c("1", "2", "3", "4", "5", "6"), c("0h", "3h", "3h20m", "4h", "4h20m", "5h")),
+    Group3 = ifelse(Group3 == 'Ctrl', 'Ctrl', paste0(Side, '.', Group3)),
+    Op3 = factor(Group3, c("Ctrl", "L.BNI", "R.BNI", "L.FNA", "R.FNA")),
+    MPA = abs(PA)
+  ) %>%
+  drop_na("PA") %>%
+  ungroup %>% droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(Measurement.method == 'MP', Time %in% c('0h', '3h')) %>% 
+  select(RatID, OperationSide, Time, Op3, PA, MPA) %>% 
+  droplevels(.) %>% 
+  group_by(RatID, Op3, OperationSide, Time) %>%
+  summarise(PA = mean(PA),
+            MPA = mean(MPA), .groups = "keep")
+
+```
+
+```{r}
+name0 <- "CI, W vs "
+name_pptx <- "W_CI"
+
+rds_folder_name <- "../../rds/sf/ctrl_nti_nal/sf_0-2_CI_dW/"
+
+dir.create(file.path(rds_folder_name), showWarnings = FALSE)
+
+load("./force_measurement/SF Sp 0-1 0.4-1 1-2 0-2 0.4-2 loess(symmetric span0.4)_Ctrl_BNI_FNA_0_3_h_rats_v2.RData")
+rm(sf) # conserve memory, we do not need the raw data
+
+dta_sf <- sf_CI_dW %>%
+  filter(dT %in% c("T_0_2")) %>%
+  rename(Op3 = Group3, Time = Period) %>%
+  select(RatID, OperationSide, Time, Op3, W) %>%
+  filter(Time %in% c('0h', '3h')) %>% 
+  ungroup %>% droplevels(.) %>% 
+  group_by(RatID, Op3, OperationSide, Time) %>%
+  summarise(W = mean(W), .groups = "keep")
+
+
+data_sf_pa <- merge(dta_sf, data_machine, by=c("RatID", "Op3", "OperationSide", "Time"), all.x=TRUE, all.y=TRUE, sort=FALSE)
+
+```
+
+
+```{r fn_get_tibble_hand_mp}
+if(.Platform$OS.type == "windows") withAutoprint({
+  windowsFonts(CENTURY=windowsFont("CENTURY"))
+  windowsFonts(Arial=windowsFont("Arial"))
+})
+
+plot_cor <- function(data, title, x_name="W", y_name="PA", col="Op3") {
+  
+  d <- data
+  
+  return (d %>% 
+  ggplot(aes(x = !!sym(x_name), y = !!sym(y_name), col=!!sym(col))) +
+    scale_color_manual(values=my.colors) +
+    geom_point(size = 3) +
+    geom_smooth(formula = y ~ x, method = "lm", col = "deeppink") +
+    labs(title = title, x=TeX(r"($\Delta W_{Contra - Ipsi}$)")) +
+    annotate("text",
+             x = max(d[[x_name]])*0.3,
+             y = max(d[[y_name]])*0.95,
+             label = paste("Pearson R = ",
+                           signif(cor(d[[x_name]], d[[y_name]]), 2),
+                           ", p = ",
+                           signif(cor.test(d[[x_name]], d[[y_name]])$p.value, 3),
+                           "\nSpearman R = ",
+                           signif(cor(d[[x_name]], d[[y_name]], method = "spearman"), 2),
+                           ", p = ",
+                           signif(cor.test(d[[x_name]], d[[y_name]], method="spearman", exact=FALSE)$p.value, 3)
+                           )
+             ) +
+     theme(
+        legend.position = "top",
+        
+        # plot.title = element_text(size=14),
+        # plot.margin = margin(margin_list[1], margin_list[2], margin_list[3], margin_list[4], "cm"),
+        # 
+        # panel.grid.major = element_blank(), 
+        # panel.grid.minor = element_blank(),
+        panel.border = element_rect(colour = "black", fill=NA, linewidth=0.55),
+        # panel.background = element_rect(fill = plot.background),
+        
+        # axis.title.x=element_blank(),
+        axis.ticks = element_line(linewidth = 0.55, colour="black"),
+        axis.ticks.length.x = unit(.13, "inches"),
+        axis.ticks.length.y = unit(.13, "inches"),
+        
+        axis.title.x = element_text(size = 14, hjust = 0.5),
+        
+        axis.title.y = element_text(size = 14, hjust = 0.5),
+        
+        axis.text = element_text(size=14, colour="black"),
+        axis.text.x = element_text(angle=0, size=14, family = "Arial", hjust=0.5, color="DimGray", margin = margin(t = 0.3, unit = "cm")),
+        
+        axis.text.y = element_text(angle=0, size=14, family = "Arial", hjust=0.5, color="DimGray", margin = margin(r = 0.3, unit = "cm")),
+        
+      )
+  )
+}
+
+```
+
+# MPA
+
+```{r mpa_sf_0}
+
+name <- paste0(name0, "MPA [Ctrl,BNI,FNA 0h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "0h") %>%
+  plot_cor(title = name, y_name = "MPA")
+print(plt[[name]])
+
+```
+
+```{r mpa_sf_3}
+  
+name <- paste0(name0, "MPA [Ctrl,BNI,FNA 3h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "3h") %>% 
+  plot_cor(title = name, y_name="MPA")
+
+print(plt[[name]])
+
+
+```
+
+```{r mpa_sf_ctrl_0}
+
+name <- paste0(name0, "MPA [Ctrl 0h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "0h", Op3 == "Ctrl") %>%
+  plot_cor(title = name, y_name = "MPA", col = "OperationSide")
+
+print(plt[[name]])
+
+```
+
+```{r mpa_sf_bni_0}
+
+name <- paste0(name0, "MPA [BNI 0h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "0h", Op3 %in% c('L.BNI', 'R.BNI')) %>%
+  plot_cor(title = name, y_name = "MPA", col = "OperationSide")
+
+print(plt[[name]])
+
+```
+
+```{r mpa_sf_fna_0}
+
+name <- paste0(name0, "MPA [FNA 0h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "0h", Op3 %in% c('L.FNA', 'R.FNA')) %>%
+  plot_cor(title = name, y_name = "MPA", col = "OperationSide")
+
+print(plt[[name]])
+
+```
+
+```{r mpa_sf_ctrl_3}
+
+name <- paste0(name0, "MPA [Ctrl 3h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "3h", Op3 == "Ctrl") %>%
+  plot_cor(title = name, y_name = "MPA", col = "OperationSide")
+
+print(plt[[name]])
+
+```
+
+```{r mpa_sf_bni_3}
+
+name <- paste0(name0, "MPA [BNI 3h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "3h", Op3 %in% c('L.BNI', 'R.BNI')) %>%
+  plot_cor(title = name, y_name = "MPA", col = "OperationSide")
+
+print(plt[[name]])
+
+```
+
+```{r mpa_sf_fna_3}
+
+name <- paste0(name0, "MPA [FNA 3h]")
+
+plt[[name]] <- 
+  
+  data_sf_pa %>% 
+  filter(Time == "3h", Op3 %in% c('L.FNA', 'R.FNA')) %>%
+  plot_cor(title = name, y_name = "MPA", col = "OperationSide")
+
+print(plt[[name]])
+
+```
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0("Correlation_SF_MPA_", name_pptx)
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```

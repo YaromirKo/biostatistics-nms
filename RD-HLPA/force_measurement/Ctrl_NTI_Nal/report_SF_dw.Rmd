@@ -1,0 +1,454 @@
+---
+title: "SF, CI dW: Bayesian regression of smoothed stretch forces"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+
+source("../../BayesianPValue.R")
+
+```
+
+# Read SF data 
+
+# Contra vs ipsi
+
+The resistance was measured as the amount of mechanical work $W_{contra}$ and $W_{ipsi}$ to stretch the contra- and ipsilesional hindlimbs, where $W(T_{0-2}) = \int_{t=0}^{2} f(t)$ was stretching  force integrated over stretching distance interval from 0 to 10 mm. Asymmetry was assessed as the difference in work performed by the contra- and ipsilesional hindlimb $\Delta W = (W_{contra} - W_{ipsi})$. The control intact rat showed symmetric $W$ pattern; the $W$ for the left and right limbs were calculated instead of $W_{contra}$ and $W_{ipsi}$ for this animal.
+
+```{r input}
+
+my.seed <- 20231103 # reproducible Bayessian fit
+my.span <- 0.4 
+
+rds_folder_name <- "../../rds/sf/ctrl_nti_nal/sf_0-2_CI_dW/"
+# rds_folder_name <- "../../rds/sf/ctrl_nti_nal/sf_0-2_LR_dW/"
+
+dir.create(file.path(rds_folder_name), showWarnings = FALSE)
+
+load("../SF Sp 0-1 0.4-1 1-2 0-2 0.4-2 loess(symmetric span0.4)_Ctrl_NTI_Nal.RData")
+rm(sf) # conserve memory, we do not need the raw data
+
+dta <- sf_CI_dW %>%
+# dta <- sf_LR_dW %>%
+  filter(dT %in% c("T_0_2")) %>%
+  rename(Op3 = Group3, Time = Period) %>%
+  droplevels(.)
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci, echo=FALSE}
+
+myname <- "SF 0-2 span=0.4 median and 95% HPDCI all group"
+
+# adapted from http://www.cookbook-r.com/Graphs/Plotting_means_and_error_bars_(ggplot2)/
+plt[["Ctrl, NTI-[L,R], Nal-[L,R] time"]] <- dta %>% 
+  group_by(Op3, Time) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(Time, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["Ctrl, NTI-[L,R], Nal-[L,R] time"]])
+
+```
+``
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_lr_time, echo=FALSE}
+
+d.sum <- dta %>% 
+  arrange(Op3, OperationSide, Time) %>% 
+  group_by(Op3, OperationSide, Time) %>% 
+  summarise(rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Time), values_from=rats)
+
+d.sum %>% flextable %>% autofit
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF AI data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_lr}
+
+myname <- "SF 0-2 span=0.4 [Ctrl, NTI-[L,R], Nal-[L,R]]"
+
+plt[["Ctrl, NTI-[L,R], Nal-[L,R]"]] <- 
+  dta %>% 
+  group_by(Op3) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x="", y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["Ctrl, NTI-[L,R], Nal-[L,R]"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2, echo=FALSE}
+
+d.sum <- dta %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise(rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% autofit
+
+```
+
+# Analyse Ctrl (3h + Saline(4h)) vs NTI [L=8, R=8], Naloxone [L=7, R=7]
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r sf_check_prior_pre}
+
+std.prior <- brm(
+  data = dta,
+  family = gaussian,
+  W ~ 0 + Op3 + (1|RatID),
+  prior = c(prior(normal(0, 10), class = "sigma"),
+            prior(normal(0, 10), class = "sd"),
+            prior(normal(0, 20), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "ctrl_nti_nal_check_prior_20230407.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted"
+                                # conditions=make_conditions(dta, vars = c("Time"))
+                                )
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] prior check"]])
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_pre, echo=FALSE, fig.width = 10}
+
+std.fit <- update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   # control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "ctrl_nti_nal_model_summary_20230407.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_pre}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_pre}
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_pre}
+
+emm <- emmeans(std.fit, ~ Op3, regrid = "response", nesting=NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_pre, echo=FALSE, fig.width = 8}
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+```
+
+```{r points_sf_emm2_pre, echo=FALSE, fig.width=8}
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] emm with Data Points"]] <- 
+  plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, jitter.height = 0, dodge.width = 0.9, seed = 2),
+      data = {
+        dta %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      # aes(y=.value, color=OperationSide))
+      aes(y=.value))
+
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_pre, echo=FALSE}
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_pre, echo=FALSE}
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+```
+
+```{r points_sf_ccdfinterval_pre, echo=FALSE, fig.width=8}
+
+plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] ccdfinterval with Data Points"]] <- 
+  plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, jitter.height = 0, dodge.width = 0.9, seed = 2),
+      data = {
+        dta %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF Ctrl, NTI-[L,R], Nal-[L,R] ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts Ctrl, NTI-[L,R], Nal-[L,R] as a table:
+
+```{r sf_contrasts}
+
+emmc <- contrast(emm, simple = "Op3", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts Ctrl, NTI-[L,R], Nal-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval).
+
+```{r sf_by_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["SF contrast Ctrl, NTI-[L,R], Nal-[L,R]"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between groups and ctrl")
+
+print(plt[["SF contrast Ctrl, NTI-[L,R], Nal-[L,R]"]])
+
+```
+
+## SF $\Delta W$: Contrasts (reverse)
+
+Contrasts Ctrl, NTI-[L,R], Nal-[L,R] as a table:
+
+```{r sf_contrasts_reverse}
+
+emmc <- contrast(emm, simple = "Op3", method = "trt.vs.ctrl1", reverse=TRUE)
+emm_show(emmc)
+
+```
+
+Contrasts Ctrl, NTI-[L,R], Nal-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval).
+
+```{r sf_by_contrasts_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF contrast Ctrl, NTI-[L,R], Nal-[L,R] reverse"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between groups and ctrl")
+
+print(plt[["SF contrast Ctrl, NTI-[L,R], Nal-[L,R] reverse"]])
+
+```
+
+ ## SF $\Delta W$: Contrast of contrasts
+
+Contrast of contrasts Ctrl, NTI-[L,R], Nal-[L,R] as a table:
+
+```{r sf_contrasts_of_contrasts}
+
+emmc_2 <- contrast(emm, simple = "Op3", method = "trt.vs.ctrl")
+emmc_2 <- contrast(emmc_2, simple = "contrast", method = "pairwise")
+
+emm_show(emmc_2)
+
+
+```
+
+Contrast of contrasts Ctrl, NTI-[L,R], Nal-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval).
+
+```{r sf_by_contrast_of_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["SF contrast of contrasts Ctrl, NTI-[L,R], Nal-[L,R]"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, Contrast of contrasts")
+
+print(plt[["SF contrast of contrasts Ctrl, NTI-[L,R], Nal-[L,R]"]])
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  sf_contrasts_of_contrasts_group_vs_ctrl_plot, echo=FALSE, fig.width = 8}
+
+plt[["SF Contrast of contrasts NTI, Naloxone vs Ctrl"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast %in% c("(L.NTI - Ctrl) - (R.Nal - Ctrl)", "(R.NTI - Ctrl) - (L.Nal - Ctrl)")) %>%
+  ggplot(aes(y = .value, x = interaction(contrast, sep=", ", drop=TRUE), fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="dW, Contrast of contrasts")
+
+print(plt[["SF Contrast of contrasts NTI, Naloxone vs Ctrl"]])
+
+```
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r  sf_contrasts_of_contrasts_group_vs_ctrl_plot_second, echo=FALSE, fig.width = 8}
+
+plt[["SF Contrast of contrasts NTI, Naloxone vs Ctrl new"]] <- emmc_2 %>% emm_inorder %>% 
+  filter(contrast %in% c("(L.NTI - Ctrl) - (R.NTI - Ctrl)", "(L.Nal - Ctrl) - (R.Nal - Ctrl)")) %>%
+  ggplot(aes(y = .value, x = interaction(contrast, sep=", ", drop=TRUE), fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="dW, Contrast of contrasts")
+
+print(plt[["SF Contrast of contrasts NTI, Naloxone vs Ctrl new"]])
+
+```
+
+
+Contrast of contrasts NTI, Naloxone, Ctrl 3h as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_contrasts_of_contrasts_group_vs_ctrl_plot_all, echo=FALSE, fig.width = 8}
+
+plt[["SF Contrast of contrasts NTI, Naloxone vs Ctrl all"]] <- emmc_2 %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="dW, Contrast of contrasts")
+
+print(plt[["SF Contrast of contrasts NTI, Naloxone vs Ctrl all"]])
+
+```
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- "SF span=0.4 0-2 CI dW Ctrl_NIT_Nal"
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```

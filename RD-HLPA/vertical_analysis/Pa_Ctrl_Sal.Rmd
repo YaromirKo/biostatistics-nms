@@ -1,0 +1,1385 @@
+---
+title: "Vertical Analysis Pa: Ctrl, Saline (L, R; hand, machine)"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../BayesianPValue.R")
+```
+
+# Pa (Probability of postural asymmetry)
+
+Threshold 1.5 mm.
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+file_name <- "data/SDU-RDPA-Stat_v2.xlsx"
+sheet <- "SDU-RD-Stat-v2"
+
+my.seed <- 20231201 # reproducible Bayesian fit
+threshold <- 1.5001 # assymetry means > 0mm, i.e. no symmetric rats
+
+myname0 <- "Pa"
+
+main_dir <- "../" # path to the base folder, containing data and results
+path_rds <- "rds/vertical_analysis/pa_ctrl_saline/" # folder to store the results 
+DESIGN <- "RD" # only reverse design data will be used
+full_rds_path = paste0(main_dir, path_rds)
+
+dir.create(file.path(main_dir, path_rds), showWarnings = FALSE)
+
+data <-
+  file.path(main_dir, file_name) %>% 
+  read_excel(sheet, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+  mutate(
+    RatID = Rat.ID,
+    Side = recode_factor(Operation.side, Left='L', Right='R'),
+    Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+    Treatment.4 = ...13,
+    WPre = BW.1,
+    WPost = BW.2,
+    Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+  ) %>%
+  drop_na("Treatment.3") %>% 
+  select(
+    RatID, Date, Side, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3,
+    starts_with(c("PA1.", "PA2.", "PA3.", "PA4.", "PA5.", "PA6."))
+  ) %>% 
+  pivot_longer(
+    cols = PA1.1:PA6.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>% 
+  mutate(
+    RatID = factor(RatID),
+    Time = factor(Time, c("1", "2", "3", "4", "5", "6"), c("0h", "3h", "3h20m", "4h", "4h20m", "5h")),
+    MPA = abs(PA)
+  ) %>%
+  filter(Time %in% c("3h", "4h", "5h")) %>% 
+  mutate(
+    Group4 = ifelse(Time == '3h' & Treatment.3 != 'Saline', 'Ctrl',
+                    ifelse(Time == '3h' & Treatment.3 == 'Saline', 'Saline',
+                           ifelse(Time == '4h', Treatment.3, 
+                                  ifelse(Time == '5h' & Treatment.3 == 'Saline', Treatment.4, 'NTI.Nal')))),
+    
+    Group4.Side = ifelse(Group4 != 'Ctrl', paste0(Side, '.', Group4), Group4),
+    Group4 = factor(Group4, c("Ctrl", "Saline", "NTI", "Nal", "NTI.Nal")),
+    Group4.Side = factor(Group4.Side, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal", "L.NTI.Nal", "R.NTI.Nal")),
+    Sym = factor(MPA < threshold, c(TRUE, FALSE), c("Sym", "Asym"))
+  ) %>% 
+  filter(Group4 != 'NTI.Nal') %>% 
+  drop_na("PA") %>%
+  ungroup %>% droplevels(.)
+
+data_hand <-
+  data %>%
+  filter(Measurement.method == "Hand") %>% 
+  droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(Measurement.method == "MP") %>% 
+  droplevels(.)
+
+```
+
+```{r splt_data, echo=FALSE}
+
+data.ctrl.saline_hand <- data_hand %>% 
+  filter((Time == '3h' & Group4 == 'Ctrl' | Time == '4h'), !is.na(Group4)) %>% 
+  droplevels(.)
+data.ctrl.saline_machine <- data_machine %>% 
+  filter((Time == '3h' & Group4 == 'Ctrl' | Time == '4h'), !is.na(Group4)) %>% 
+  droplevels(.)
+
+data.saline_hand <- data_hand %>% 
+  filter(Group4 == 'Saline', Time %in% c("3h", "4h")) %>% 
+  droplevels(.)
+data.saline_machine <- data_machine %>% 
+  filter(Group4 == 'Saline', Time %in% c("3h", "4h")) %>% 
+  droplevels(.)
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2.1, echo=FALSE}
+
+data.ctrl.saline_hand %>% 
+  arrange(Group4.Side, Time) %>% 
+  group_by(Group4.Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  # select(!Time) %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+\|PA\| $\leqslant$ 1.5mm (threshold) are defined as "Symmetric" (Sym) (\|PA\| - Average of all 6 measurements per rat)
+
+Hand data
+
+```{r input2, echo=FALSE}
+
+data.ctrl.saline_hand %>%
+  arrange(Group4.Side, Time) %>% 
+  group_by(RatID, Group4.Side, Time) %>% 
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Group4.Side, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("4h" = 0, "3h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+# (Hand) Analyse Ctrl and Saline: Ctrl(3h) vs Saline(L+R, 4h) injection
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_ctrl_saline_l_r_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Ctrl_Saline_L_R_Hand")
+
+d1 <- data.ctrl.saline_hand %>%
+  filter(Group4.Side %in% c("Ctrl", "L.Saline", "R.Saline"))
+
+d1 %>%
+  arrange(Group4.Side) %>%
+  group_by(RatID, Group4.Side) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4.Side) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=rats) %>%
+  # replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Ctrl and Saline groups
+
+```{r hand_ctrl_saline_l_r_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4.Side) %>% 
+  group_by(Group4.Side) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_ctrl_saline_l_r_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Group4.Side,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "ctrl_saline_l_r_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ctrl_saline_l_r_pa_MCMC_ppcheck}
+
+plt[["hand ctrl vs saline(L,R) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand ctrl vs saline(L,R) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_ctrl_saline_l_r_pa_MCMC_ac}
+
+print( plt[["hand ctrl vs saline(L,R) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_ctlr_saline_l_r_pa_emm}
+
+emm <- emmeans(m.lat, ~ Group4.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_ctrl_saline_l_r_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand Ctrl vs Saline(L,R) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4.Side, sep=", ", drop=TRUE)), x = .value, fill = Group4.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Ctrl.vs.Saline(L,R)")
+
+print(plt[["Hand Ctrl vs Saline(L,R) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_ctrl_saline_l_r_pa_contrasts}
+
+emmc <- contrast(emm, simple="Group4.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts between Groups as a median +- 95% HPDCI:
+
+```{r hand_ctrl_saline_l_r_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["hand Ctrl vs Saline(L,R) Pa by Group"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast")
+print(plt[["hand Ctrl vs Saline(L,R) Pa by Group"]])
+
+```
+
+# (Hand) Analyse Ctrl vs Saline (L+R):
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_ctrl_saline_lr_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Ctrl_Saline_LR_Hand")
+
+d1 <- data.ctrl.saline_hand %>%
+  filter(Group4 %in% c("Ctrl", "Saline"))
+
+d1 %>%
+  arrange(Group4) %>%
+  group_by(RatID, Group4) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=rats) %>%
+  # replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Ctrl and Saline groups
+
+```{r hand_ctrl_saline_lr_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4) %>% 
+  group_by(Group4) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_ctrl_saline_lr_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Group4,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "ctrl_saline_lr_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ctrl_saline_lr_pa_MCMC_ppcheck}
+
+plt[["hand ctrl vs saline(L+R) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand ctrl vs saline(L+R) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_ctrl_saline_lr_pa_MCMC_ac}
+
+print( plt[["hand ctrl vs saline(L+R) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_ctrl_saline_lr_pa_emm}
+
+emm <- emmeans(m.lat, ~ Group4, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_ctrl_saline_lr_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand Ctrl vs Saline(L+R) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4, sep=", ", drop=TRUE)), x = .value, fill = Group4)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Ctrl.vs.Saline(L+R)")
+
+print(plt[["Hand Ctrl vs Saline(L+R) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_ctrl_saline_lr_pa_contrasts}
+
+emmc <- contrast(emm, simple="Group4", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts between Groups as a median +- 95% HPDCI:
+
+```{r hand_ctrl_saline_lr_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["hand Ctrl vs Saline(L+R) Pa by Group"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast")
+print(plt[["hand Ctrl vs Saline(L+R) Pa by Group"]])
+
+```
+
+# (Hand) Analyse Saline: Saline(L, R, 3h, 4h) injection
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_saline_l_r_3_4_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Saline_L_R_3_4_Hand")
+
+d1 <- data.saline_hand 
+
+d1 %>%
+  arrange(Group4, Time, Side) %>%
+  group_by(RatID, Group4, Time, Side) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4, Time, Side) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Saline group
+
+```{r hand_saline_l_r_3_4_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4, Time, Side) %>% 
+  group_by(Group4, Time, Side) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_saline_l_r_3_4_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Time:Side,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "saline_l_r_3_4_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_saline_l_r_3_4_pa_MCMC_ppcheck}
+
+plt[["hand saline(L,R,3h,4h) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand saline(L,R,3h,4h) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_saline_l_r_3_4_pa_MCMC_ac}
+
+print( plt[["hand saline(L,R,3h,4h) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_saline_l_r_3_4_pa_emm}
+
+emm <- emmeans(m.lat, ~ Time:Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_saline_l_r_3_4_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand saline(L,R,3h,4h) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Time, Side, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Saline(L,R,3h,4h)")
+
+print(plt[["Hand saline(L,R,3h,4h) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_saline_l_r_3_4_pa_contrasts}
+
+emmc <- rbind(contrast(emm, simple = "Side", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec"))
+
+emm_show(emmc)
+
+```
+
+Contrasts between Sides as a median +- 95% HPDCI:
+
+```{r hand_saline_l_r_3_4_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["Saline(L,R,3h,4h) Pa by Side (hand)"]] <- emmc %>% emm_inorder %>% filter(Side == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast by side")
+
+print(plt[["Saline(L,R,3h,4h) Pa by Side (hand)"]])
+
+```
+Contrasts between Time as a median +- 95% HPDCI:
+
+```{r hand_saline_l_r_3_4_pa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["Saline(L,R,3h,4h) Pa by Time (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast by time")
+
+print(plt[["Saline(L,R,3h,4h) Pa by Time (hand)"]])
+
+```
+
+# (Hand) Saline Left+Right sides 3h vs 4h:
+## Pa: Model Overview
+
+The data points
+
+```{r hand_saline_lr_3_4_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Saline_LR_3_4_Hand")
+
+d1 <- data.saline_hand 
+
+d1 %>%
+  arrange(Group4, Time) %>%
+  group_by(RatID, Group4, Time) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Saline group
+
+```{r hand_saline_lr_3_4_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4, Time) %>% 
+  group_by(Group4, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_saline_lr_3_4_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "saline_lr_3_4_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_saline_lr_3_4_pa_MCMC_ppcheck}
+
+plt[["hand saline(L+R,3h,4h) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand saline(L+R,3h,4h) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_saline_lr_3_4_pa_MCMC_ac}
+
+print( plt[["hand saline(L+R,3h,4h) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_saline_lr_3_4_pa_emm}
+
+emm <- emmeans(m.lat, ~ Time, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_saline_lr_3_4_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand saline(L+R,3h,4h) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Time, sep=", ", drop=TRUE)), x = .value, fill = Time)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Saline(L+R,3h,4h)")
+
+print(plt[["Hand saline(L+R,3h,4h) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_saline_lr_3_4_pa_contrasts}
+
+emmc <- contrast(emm, simple = "Time", method = "consec")
+
+emm_show(emmc)
+
+```
+
+Contrasts between Sides as a median +- 95% HPDCI:
+
+```{r hand_saline_lr_3_4_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["Saline(L+R,3h,4h) Pa by Time (hand)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast")
+
+print(plt[["Saline(L+R,3h,4h) Pa by Time (hand)"]])
+
+```
+
+# (Machine) Analyse Ctrl and Saline: Ctrl(3h) vs Saline(L+R, 4h) injection
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_ctrl_saline_l_r_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Ctrl_Saline_L_R_machine")
+
+d1 <- data.ctrl.saline_machine %>%
+  filter(Group4.Side %in% c("Ctrl", "L.Saline", "R.Saline"))
+
+d1 %>%
+  arrange(Group4.Side) %>%
+  group_by(RatID, Group4.Side) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4.Side) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=rats) %>%
+  # replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Ctrl and Saline groups
+
+```{r machine_ctrl_saline_l_r_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4.Side) %>% 
+  group_by(Group4.Side) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_ctrl_saline_l_r_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Group4.Side,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "machine_ctrl_saline_l_r_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_ctrl_saline_l_r_pa_MCMC_ppcheck}
+
+plt[["machine ctrl vs saline(L,R) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine ctrl vs saline(L,R) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_ctrl_saline_l_r_pa_MCMC_ac}
+
+print( plt[["machine ctrl vs saline(L,R) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_ctlr_saline_l_r_pa_emm}
+
+emm <- emmeans(m.lat, ~ Group4.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_ctrl_saline_l_r_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine Ctrl vs Saline(L,R) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4.Side, sep=", ", drop=TRUE)), x = .value, fill = Group4.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Ctrl.vs.Saline(L,R)")
+
+print(plt[["machine Ctrl vs Saline(L,R) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_ctrl_saline_l_r_pa_contrasts}
+
+emmc <- contrast(emm, simple="Group4.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts between Groups as a median +- 95% HPDCI:
+
+```{r machine_ctrl_saline_l_r_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine Ctrl vs Saline(L,R) Pa by Group"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast")
+print(plt[["machine Ctrl vs Saline(L,R) Pa by Group"]])
+
+```
+
+# (Machine) Analyse Ctrl vs Saline (L+R):
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_ctrl_saline_lr_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Ctrl_Saline_LR_machine")
+
+d1 <- data.ctrl.saline_machine %>%
+  filter(Group4 %in% c("Ctrl", "Saline"))
+
+d1 %>%
+  arrange(Group4) %>%
+  group_by(RatID, Group4) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=rats) %>%
+  # replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Ctrl and Saline groups
+
+```{r machine_ctrl_saline_lr_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4) %>% 
+  group_by(Group4) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_ctrl_saline_lr_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Group4,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "machine_ctrl_saline_lr_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_ctrl_saline_lr_pa_MCMC_ppcheck}
+
+plt[["machine ctrl vs saline(L+R) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine ctrl vs saline(L+R) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_ctrl_saline_lr_pa_MCMC_ac}
+
+print( plt[["machine ctrl vs saline(L+R) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_ctrl_saline_lr_pa_emm}
+
+emm <- emmeans(m.lat, ~ Group4, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_ctrl_saline_lr_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine Ctrl vs Saline(L+R) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4, sep=", ", drop=TRUE)), x = .value, fill = Group4)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Ctrl.vs.Saline(L+R)")
+
+print(plt[["machine Ctrl vs Saline(L+R) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_ctrl_saline_lr_pa_contrasts}
+
+emmc <- contrast(emm, simple="Group4", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts between Groups as a median +- 95% HPDCI:
+
+```{r machine_ctrl_saline_lr_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine Ctrl vs Saline(L+R) Pa by Group"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast")
+print(plt[["machine Ctrl vs Saline(L+R) Pa by Group"]])
+
+```
+
+# (Machine) Analyse Saline: Saline(L, R, 3h, 4h) injection
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_saline_l_r_3_4_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Saline_L_R_3_4_machine")
+
+d1 <- data.saline_machine
+
+d1 %>%
+  arrange(Group4, Time, Side) %>%
+  group_by(RatID, Group4, Time, Side) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4, Time, Side) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Saline group
+
+```{r machine_saline_l_r_3_4_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4, Time, Side) %>% 
+  group_by(Group4, Time, Side) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_saline_l_r_3_4_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Time:Side,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "machine_saline_l_r_3_4_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_saline_l_r_3_4_pa_MCMC_ppcheck}
+
+plt[["machine saline(L,R,3h,4h) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine saline(L,R,3h,4h) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_saline_l_r_3_4_pa_MCMC_ac}
+
+print( plt[["machine saline(L,R,3h,4h) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_saline_l_r_3_4_pa_emm}
+
+emm <- emmeans(m.lat, ~ Time:Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_saline_l_r_3_4_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine saline(L,R,3h,4h) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Time, Side, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Saline(L,R,3h,4h)")
+
+print(plt[["machine saline(L,R,3h,4h) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_saline_l_r_3_4_pa_contrasts}
+
+emmc <- rbind(contrast(emm, simple = "Side", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec"))
+
+emm_show(emmc)
+
+```
+
+Contrasts between Sides as a median +- 95% HPDCI:
+
+```{r machine_saline_l_r_3_4_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["Saline(L,R,3h,4h) Pa by Side (machine)"]] <- emmc %>% emm_inorder %>% filter(Side == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast by side")
+
+print(plt[["Saline(L,R,3h,4h) Pa by Side (machine)"]])
+
+```
+Contrasts between Time as a median +- 95% HPDCI:
+
+```{r machine_saline_l_r_3_4_pa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["Saline(L,R,3h,4h) Pa by Time (machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast by time")
+
+print(plt[["Saline(L,R,3h,4h) Pa by Time (machine)"]])
+
+```
+
+# (Machine) Saline Left+Right sides 3h vs 4h:
+## Pa: Model Overview
+
+The data points
+
+```{r machine_saline_lr_3_4_data, echo=FALSE}
+
+myname <- paste0(myname0, "_Saline_LR_3_4_machine")
+
+d1 <- data.saline_machine
+
+d1 %>%
+  arrange(Group4, Time) %>%
+  group_by(RatID, Group4, Time) %>%
+  summarise(SymAverage = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(SymAverage, Group4, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("3h" = 0, "4h" = 0)) %>%
+  flextable %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>%
+  autofit
+
+```
+
+Trials and number of asymmetric rats for the Saline group
+
+```{r machine_saline_lr_3_4_pa_asym, echo=FALSE}
+
+dtaAsym <- d1 %>% 
+  arrange(Group4, Time) %>% 
+  group_by(Group4, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop")
+  # mutate(Side = fct_inorder(Group4.Side))
+# 
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Group4.Side) %>%
+#   summarise( Group4.Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) #%>%
+#   # mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  # pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  # pivot_wider(names_from=c(Group4.Side), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_saline_lr_3_4_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(full_rds_path, "machine_saline_lr_3_4_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_saline_lr_3_4_pa_MCMC_ppcheck}
+
+plt[["machine saline(L+R,3h,4h) Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine saline(L+R,3h,4h) Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_saline_lr_3_4_pa_MCMC_ac}
+
+print( plt[["machine saline(L+R,3h,4h) Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_saline_lr_3_4_pa_emm}
+
+emm <- emmeans(m.lat, ~ Time, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_saline_lr_3_4_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine saline(L+R,3h,4h) Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Time, sep=", ", drop=TRUE)), x = .value, fill = Time)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: Saline(L+R,3h,4h)")
+
+print(plt[["machine saline(L+R,3h,4h) Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_saline_lr_3_4_pa_contrasts}
+
+emmc <- contrast(emm, simple = "Time", method = "consec")
+
+emm_show(emmc)
+
+```
+
+Contrasts between Sides as a median +- 95% HPDCI:
+
+```{r machine_saline_lr_3_4_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["Saline(L+R,3h,4h) Pa by Time (machine)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast")
+
+print(plt[["Saline(L+R,3h,4h) Pa by Time (machine)"]])
+
+```
+
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0(myname0, "_Pa_Ctrl_Saline")
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```

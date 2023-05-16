@@ -1,0 +1,625 @@
+---
+title: "Vertical Analysis MPA: Ctrl, Saline (L, R; hand, machine)"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "Date: `r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  word_document: default
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../BayesianPValue.R")
+```
+
+# MPA (Magnitude of Postural asymmetry)
+
+Values in “+”.
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+file_name <- "data/SDU-RDPA-Stat_v2.xlsx"
+sheet <- "SDU-RD-Stat-v2"
+
+my.seed <- 20231201 # reproducible Bayessian fit
+
+myname0 <- "MPA"
+
+main_dir <- "../" # path to the base folder, containing data and results
+path_rds <- "rds/vertical_analysis/mpa_negbinomial/" # folder to store the results 
+DESIGN <- "RD" # only reverse design data will be used
+full_rds_path = paste0(main_dir, path_rds)
+
+dir.create(file.path(main_dir, path_rds), showWarnings = FALSE)
+
+data <-
+  file.path(main_dir, file_name) %>% 
+  read_excel(sheet, .name_repair = "universal", na = c("", "NA", "NULL")) %>%
+  mutate(
+    RatID = Rat.ID,
+    Side = recode_factor(Operation.side, Left='L', Right='R'),
+    Dose = factor(Anesthesia.dosage..route, c("40 mg/kg, i.p.", "60 mg/kg, i.p."), c("40", "60")),
+    Treatment.4 = factor(...13),
+    WPre = BW.1,
+    WPost = BW.2,
+    Group3 = ifelse(is.na(Treatment.1), "Ctrl", Treatment.1)
+    # Trt4 = ifelse(is.na(Treatment.1) & (!is.na(Treatment.3) & (Treatment.3 != 'Saline')), "Ctrl", Treatment.3)
+  ) %>% 
+  select(
+    RatID, Date, Side, Measurement.method, Dose, Treatment.1, Treatment.3, Treatment.4, WPre, WPost, Group3,
+    starts_with(c("PA1.", "PA2.", "PA3.", "PA4.", "PA5.", "PA6."))
+  ) %>% 
+  pivot_longer(
+    cols = PA1.1:PA6.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>% 
+  mutate(
+    RatID = factor(RatID),
+    Time = factor(Time, c("1", "2", "3", "4", "5", "6"), c("0h", "3h", "3h20m", "4h", "4h20m", "5h")),
+    Group4 = ifelse(Group3 == 'Ctrl' & Time == '3h' & (!is.na(Treatment.3) & (Treatment.3 != 'Saline')), 'Ctrl', Treatment.3),
+    Group4.Side = ifelse(Group4 != 'Ctrl', paste0(Side, '.', Group4), Group4),
+    Group4 = factor(Group4, c("Ctrl", "Saline", "NTI", "Nal")),
+    Group4.Side = factor(Group4.Side, c("Ctrl", "L.Saline", "R.Saline", "L.NTI", "R.NTI", "L.Nal", "R.Nal")),
+    MPA = abs(PA),
+    MPA.int = MPA / 0.5
+  ) %>%
+  drop_na("PA") %>%
+  ungroup %>% droplevels(.)
+
+data_hand <-
+  data %>%
+  filter(Measurement.method == "Hand") %>% 
+  droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(Measurement.method == "MP") %>% 
+  droplevels(.)
+
+```
+# Ctrl vs Saline (L, R):
+In the control group, only those rats that were not injected with anything and with asymmetry > 1.5 mm.
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2, echo=FALSE}
+
+data.ctrl.saline_hand <- data_hand %>% 
+  filter((Time == '3h' & Group4 == 'Ctrl' | Time == '4h'), !is.na(Group4)) %>% 
+  droplevels(.)
+data.ctrl.saline_machine <- data_machine %>% 
+  filter((Time == '3h' & Group4 == 'Ctrl' | Time == '4h'), !is.na(Group4)) %>% 
+  droplevels(.)
+
+data.saline_hand <- data_hand %>% 
+  filter(Group4 == 'Saline', Time %in% c("3h", "4h")) %>% 
+  droplevels(.)
+data.saline_machine <- data_machine %>% 
+  filter(Group4 == 'Saline', Time %in% c("3h", "4h")) %>% 
+  droplevels(.)
+
+
+data.ctrl.saline_hand %>% 
+  arrange(Group4.Side, Time) %>% 
+  group_by(Group4.Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  select(!Time) %>%
+  # pivot_wider(names_from=c(Time), values_from=rats) %>%
+  # replace_na(list("3h"=0, "4h"=0)) %>%
+  flextable %>% autofit
+
+```
+
+
+```{r}
+d1 <-
+  data.ctrl.saline_machine %>%
+  filter(Group4.Side %in% c("Ctrl", "L.Saline", "R.Saline")) %>%
+  droplevels(.)
+
+get_prior(
+  data = d1,
+  family = negbinomial,
+  MPA.int ~ 0 + Group4.Side + (1|RatID)
+)
+```
+
+
+# (Hand) Analyse Ctrl and Saline: Ctrl(3h) vs L-Saline(4h) vs R-Saline(4h) injection
+
+If "L,R Saline" is not significantly different from "Ctrl" (by MPA) groups we can merge them into single "Ctrl" group to test against with other injections.
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r hand_ctrl_mpa_check_prior}
+
+d1 <- 
+  data.ctrl.saline_hand %>%
+  filter(Group4.Side %in% c("Ctrl", "L.Saline", "R.Saline")) %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_Ctrl_Hand")
+
+std.prior <- brm(
+  data = d1,
+  family = hurdle_poisson,
+  MPA.int ~ 0 + Group4.Side + (1|RatID),
+  # prior = c(prior(student_t(3, 0, 2.5), class = "sd"),
+  #           prior(normal(0.1, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  # sample_prior = "only",
+  file = paste0(full_rds_path, "ctrl_check_priornormal53only.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Group4.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl MPA prior vs data (hand)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl MPA prior pp_check (hand)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl MPA prior vs data (hand)"]])
+print(plt[["Ctrl MPA prior pp_check (hand)"]])
+
+```
+
+Model fit and QC:
+
+```{r hand_ctrl_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "ctrl_model_summary1.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ctrl_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl MPA pp_check (hand)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl MPA pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r hand_ctrl_mpa_MCMC_ac}
+
+plt[["Ctrl MPA ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl MPA ac (hand)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r hand_ctrl_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Group4.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl MPA emm (hand)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4.Side, sep=", ", drop=TRUE)), x = .value, fill = Group4.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl and Saline")
+
+print(plt[["Ctrl MPA emm (hand)"]])
+
+```
+
+<!-- Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat) -->
+
+<!-- ```{r points_hand_ctrl_mpa_emm_plot, echo=FALSE, fig.width=8} -->
+
+<!-- plt[["Ctrl MPA emm (hand) with Data Points"]] <-  -->
+<!--   plt[["Ctrl MPA emm (hand)"]] + -->
+<!--     geom_point( -->
+<!--       pch = 4, -->
+<!--       position = position_nudge(y=0.15), -->
+<!--       data = { -->
+<!--         d1 %>% -->
+<!--           group_by(RatID, Group4.Side) %>% -->
+<!--           summarise(.value = mean(MPA), .groups = "drop") -->
+<!--       }, -->
+<!--       aes(x=.value)) -->
+
+<!-- print(plt[["Ctrl MPA emm (hand) with Data Points"]]) -->
+
+<!-- ``` -->
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ctrl_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Group4.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ctrl_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl MPA by Side (hand)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs L,R-Saline")
+
+print(plt[["Ctrl MPA by Side (hand)"]])
+
+```
+
+# v2 (Hand) Analyse Ctrl and Saline: Ctrl(3h) vs L-Saline(4h) vs R-Saline(4h) injection
+
+If "L,R Saline" is not significantly different from "Ctrl" (by MPA) groups we can merge them into single "Ctrl" group to test against with other injections.
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r v2hand_ctrl_mpa_check_prior}
+
+d1 <- 
+  data.ctrl.saline_hand %>%
+  filter(Group4.Side %in% c("Ctrl", "L.Saline", "R.Saline")) %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_Ctrl_Hand")
+
+std.prior <- brm(
+  data = d1,
+  family = negbinomial,
+  MPA.int ~ 0 + Group4.Side + (1|RatID),
+  prior = # c(prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 1.5), class = "b"),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(full_rds_path, "ctrl_check_priorv2.303010.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Group4.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl MPA prior vs data (hand)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl MPA prior pp_check (hand)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl MPA prior vs data (hand)"]])
+print(plt[["Ctrl MPA prior pp_check (hand)"]])
+
+```
+
+Model fit and QC:
+
+```{r v2hand_ctrl_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "ctrl_model_summaryv2.normal0075.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r v2hand_ctrl_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl MPA pp_check (hand)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl MPA pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r v2hand_ctrl_mpa_MCMC_ac}
+
+plt[["Ctrl MPA ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl MPA ac (hand)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r v2hand_ctrl_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Group4.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r v2hand_ctrl_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl MPA emm (hand)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4.Side, sep=", ", drop=TRUE)), x = .value, fill = Group4.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl and Saline")
+
+print(plt[["Ctrl MPA emm (hand)"]])
+
+```
+
+<!-- Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat) -->
+
+<!-- ```{r points_hand_ctrl_mpa_emm_plot, echo=FALSE, fig.width=8} -->
+
+<!-- plt[["Ctrl MPA emm (hand) with Data Points"]] <-  -->
+<!--   plt[["Ctrl MPA emm (hand)"]] + -->
+<!--     geom_point( -->
+<!--       pch = 4, -->
+<!--       position = position_nudge(y=0.15), -->
+<!--       data = { -->
+<!--         d1 %>% -->
+<!--           group_by(RatID, Group4.Side) %>% -->
+<!--           summarise(.value = mean(MPA), .groups = "drop") -->
+<!--       }, -->
+<!--       aes(x=.value)) -->
+
+<!-- print(plt[["Ctrl MPA emm (hand) with Data Points"]]) -->
+
+<!-- ``` -->
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r v2hand_ctrl_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Group4.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r v2hand_ctrl_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl MPA by Side (hand)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs L,R-Saline")
+
+print(plt[["Ctrl MPA by Side (hand)"]])
+
+```
+
+# Poisson (Hand) Analyse Ctrl and Saline: Ctrl(3h) vs L-Saline(4h) vs R-Saline(4h) injection
+
+If "L,R Saline" is not significantly different from "Ctrl" (by MPA) groups we can merge them into single "Ctrl" group to test against with other injections.
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r v3hand_ctrl_mpa_check_prior}
+
+d1 <- 
+  data.ctrl.saline_hand %>%
+  filter(Group4.Side %in% c("Ctrl", "L.Saline", "R.Saline")) %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_Ctrl_Hand")
+
+std.prior <- brm(
+  data = d1,
+  family = poisson,
+  MPA.int ~ 0 + Group4.Side + (1|RatID),
+  # prior = prior(normal(0, 1), class = "b"),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  # sample_prior = "only",
+  file = paste0(full_rds_path, "ctrl_check_prior.poisson.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Group4.Side", 
+                                method="fitted")
+                                #conditions=make_conditions(d1, vars = c("Time")))
+
+plt[["Ctrl MPA prior vs data (hand)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["Ctrl MPA prior pp_check (hand)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["Ctrl MPA prior vs data (hand)"]])
+print(plt[["Ctrl MPA prior pp_check (hand)"]])
+
+```
+
+Model fit and QC:
+
+```{r v3hand_ctrl_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(full_rds_path, "ctrl_model_summary.poisson.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r v3hand_ctrl_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["Ctrl MPA pp_check (hand)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["Ctrl MPA pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r v3hand_ctrl_mpa_MCMC_ac}
+
+plt[["Ctrl MPA ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["Ctrl MPA ac (hand)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r v3hand_ctrl_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Group4.Side, regrid = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r v3hand_ctrl_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl MPA emm (hand)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Group4.Side, sep=", ", drop=TRUE)), x = .value, fill = Group4.Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) Ctrl and Saline")
+
+print(plt[["Ctrl MPA emm (hand)"]])
+
+```
+
+<!-- Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat) -->
+
+<!-- ```{r points_hand_ctrl_mpa_emm_plot, echo=FALSE, fig.width=8} -->
+
+<!-- plt[["Ctrl MPA emm (hand) with Data Points"]] <-  -->
+<!--   plt[["Ctrl MPA emm (hand)"]] + -->
+<!--     geom_point( -->
+<!--       pch = 4, -->
+<!--       position = position_nudge(y=0.15), -->
+<!--       data = { -->
+<!--         d1 %>% -->
+<!--           group_by(RatID, Group4.Side) %>% -->
+<!--           summarise(.value = mean(MPA), .groups = "drop") -->
+<!--       }, -->
+<!--       aes(x=.value)) -->
+
+<!-- print(plt[["Ctrl MPA emm (hand) with Data Points"]]) -->
+
+<!-- ``` -->
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r v3hand_ctrl_mpa_contrasts}
+
+emmc <- contrast(emm, simple = "Group4.Side", method = "trt.vs.ctrl1")
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r v3hand_ctrl_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["Ctrl MPA by Side (hand)"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes( y = fct_rev(interaction(contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Ctrl vs L,R-Saline")
+
+print(plt[["Ctrl MPA by Side (hand)"]])
+
+```
+
