@@ -1,0 +1,3961 @@
+---
+# title: "SF, CI dW: Bayesian regression of smoothed stretch forces"
+title: "SF, LR dW: Bayesian regression of smoothed stretch forces"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "12/14/2021"
+output:
+ word_document: default
+ html_document:
+  toc: true
+  toc_float:
+   collapsed: false
+editor_options:
+ chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+
+# rm(list = ls())
+# gc()
+
+source("../BayesianPValue.R")
+
+```
+
+# Read SF data 
+
+# LEFT VS RIGHT but not contra vs ipsi
+
+The resistance was measured as the amount of mechanical work $W_{contra}$ and $W_{ipsi}$ to stretch the contra- and ipsilesional hindlimbs, where $W(T_{0-2}) = \int_{t=0}^{2} f(t)$ was stretching  force integrated over stretching distance interval from 0 to 10 mm. Asymmetry was assessed as the difference in work performed by the contra- and ipsilesional hindlimb $\Delta W = (W_{contra} - W_{ipsi})$. The control intact rat showed symmetric $W$ pattern; the $W$ for the left and right limbs were calculated instead of $W_{contra}$ and $W_{ipsi}$ for this animal.
+
+```{r input}
+
+my.seed <- 1652091221 # reproducible Bayessian fit
+
+# rds_folder_name <- "../rds/sf/sf_0-2_CI_dW/"
+rds_folder_name <- "../rds/sf/sf_0-2_LR_dW/"
+
+load("SF Sp 0-1 0.4-1 1-2 0-2 0.4-2 loess(symmetric span0.4)_all_rats_VMaster.RData")
+# rm(sf) # conserve memory, we do not need the raw data
+
+# dta <- sf_CI_dW %>%
+dta <- sf_LR_dW %>%
+  filter(dT %in% c("T_0_2")) %>%
+  droplevels(.)
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r origData, echo=FALSE}
+
+myname <- "SF 0-2 span=0.4 median and 95% HPDCI all group"
+
+# adapted from http://www.cookbook-r.com/Graphs/Plotting_means_and_error_bars_(ggplot2)/
+plt[["all_group"]] <- dta %>% 
+  group_by(Trt, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Trt)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["all_group"]])
+
+```
+
+# preSO vs SO vs SO+Rhiz
+
+```{r pre_so_so_rhiz}
+
+dta_SO <-
+  dta %>%
+  filter(TrtGroup %in% c("preSO", "SO", "SO+Rhiz")) %>%
+  droplevels(.) %>% 
+  mutate(Op3 = TrtGroup,
+         Op3 = factor(Op3))
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_pre_so_so_rhiz}
+
+myname <- "SF 0-2 span=0.4 [preSO vs SO vs SO+Rhiz]"
+
+plt[["preSO vs SO vs SO+Rhiz"]] <- 
+  dta_SO %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["preSO vs SO vs SO+Rhiz"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_pre_so_so_rhiz, echo=FALSE}
+
+d.sum <- dta_SO %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_pre_so_so_rhiz, include=FALSE}
+
+get_prior(data = dta_SO,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_pre_so_so_rhiz}
+
+std.prior <- brm(
+  data = dta_SO,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "pre_so_rhiZ_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF preSO vs SO vs SO+Rhiz prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF preSO vs SO vs SO+Rhiz prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF preSO vs SO vs SO+Rhiz prior check"]])
+print(plt[["SF preSO vs SO vs SO+Rhiz prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_pre_so_so_rhiz, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "pre_so_rhiZ_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_pre_so_so_rhiz}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF preSO vs SO vs SO+Rhiz pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF preSO vs SO vs SO+Rhiz pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_pre_so_so_rhiz}
+
+plt[["SF preSO vs SO vs SO+Rhiz ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF preSO vs SO vs SO+Rhiz ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_pre_so_so_rhiz}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_pre_so_so_rhiz, echo=FALSE, fig.width = 8}
+
+plt[["SF preSO vs SO vs SO+Rhiz emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF preSO vs SO vs SO+Rhiz emm"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_sf_pre_so_so_rhiz, echo=FALSE, fig.width=8}
+
+plt[["SF preSO vs SO vs SO+Rhiz emm with Data Points"]] <- 
+  plt[["SF preSO vs SO vs SO+Rhiz emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_SO %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF preSO vs SO vs SO+Rhiz emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_pre_so_so_rhiz, echo=FALSE}
+
+plt[["SF preSO vs SO vs SO+Rhiz bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF preSO vs SO vs SO+Rhiz bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_pre_so_so_rhiz, echo=FALSE}
+
+plt[["SF preSO vs SO vs SO+Rhiz ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF preSO vs SO vs SO+Rhiz ccdfinterval"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers ("x" - mean values of measurements for each rat)
+
+```{r points_sf_ccdfinterval_pre_so_so_rhiz, echo=FALSE, fig.width=8}
+
+plt[["SF preSO vs SO vs SO+Rhiz ccdfinterval with Data Points"]] <- 
+  plt[["SF preSO vs SO vs SO+Rhiz ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_SO %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF preSO vs SO vs SO+Rhiz ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts preSO vs SO vs SO+Rhiz as a table:
+
+```{r sf_contrasts_pre_so_so_rhiz}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts preSO vs SO vs SO+Rhiz as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_pre_so_so_rhiz, echo=FALSE, fig.width = 8}
+
+plt[["SF by preSO vs SO vs SO+Rhiz"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by preSO vs SO vs SO+Rhiz"]])
+
+```
+
+Contrasts reverse preSO vs SO vs SO+Rhiz as a table:
+
+```{r sf_contrasts_pre_so_so_rhiz_reverse}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts reverse preSO vs SO vs SO+Rhiz as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_pre_so_so_rhiz_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF by preSO vs SO vs SO+Rhiz reverse"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by preSO vs SO vs SO+Rhiz reverse"]])
+
+```
+
+
+# SO vs UBI.L vs UBI.R [3 hrs after the brain surgery]
+
+```{r so_ubi_lr}
+
+dta_SO_UBI <-
+  dta %>%
+  filter(TrtGroup %in% c("SO", "UBI")) %>%
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(Operation == "SO", Operation, paste0(Operation, ".", OperationSide)),
+    Op3 = factor(Op3)
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_so_ubi_lr}
+
+myname <- "SF 0-2 span=0.4 [SO vs UBI]"
+
+plt[["SO vs UBI"]] <- 
+  dta_SO_UBI %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SO vs UBI"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_so_ubi_lr, echo=FALSE}
+
+d.sum <- dta_SO_UBI %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_so_ubi, include=FALSE}
+
+get_prior(data = dta_SO_UBI,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_so_ubi}
+
+std.prior <- brm(
+  data = dta_SO_UBI,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_ubi_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF SO vs UBI-L vs UBI-R prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF SO vs UBI-L vs UBI-R prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF SO vs UBI-L vs UBI-R prior check"]])
+print(plt[["SF SO vs UBI-L vs UBI-R prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_so_ubi, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_ubi_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_so_ubi}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF SO vs UBI-L vs UBI-R pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF SO vs UBI-L vs UBI-R pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_so_ubi_MCMC_ac}
+
+plt[["SF SO vs UBI-L vs UBI-R ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF SO vs UBI-L vs UBI-R ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_so_ubi}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response")
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_so_ubi, echo=FALSE, fig.width = 8}
+
+plt[["SF SO vs UBI-L vs UBI-R emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI-L vs UBI-R emm"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_sf_so_ubi_hpdci, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI-L vs UBI-R emm with Data Points"]] <- 
+  plt[["SF SO vs UBI-L vs UBI-R emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_SO_UBI %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI-L vs UBI-R emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_so_ubi, echo=FALSE}
+
+plt[["SF SO vs UBI-L vs UBI-R bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF SO vs UBI-L vs UBI-R bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_so_ubi, echo=FALSE}
+
+plt[["SF SO vs UBI-L vs UBI-R ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI-L vs UBI-R ccdfinterval"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers: ("x" - mean values of measurements for each rat)
+
+```{r points_sf_ccdfinterval_so_ubi, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI-L vs UBI-R ccdfinterval with Data Points"]] <- 
+  plt[["SF SO vs UBI-L vs UBI-R ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_SO_UBI %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI-L vs UBI-R ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts SO vs UBI.L vs UBI.R as a table:
+
+```{r sf_contrasts_so_ubi}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts SO vs UBI.L vs UBI.R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI-L vs UBI-R"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI-L vs UBI-R"]])
+
+```
+
+Contrasts reverse SO vs UBI.L vs UBI.R as a table:
+
+```{r sf_contrasts_so_ubi_reverse}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts reverse SO vs UBI.L vs UBI.R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI-L vs UBI-R reverse"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI-L vs UBI-R reverse"]])
+
+```
+
+Contrasts addition SO vs UBI.L, UBI.R as a table:
+
+```{r sf_contrasts_so_ubi_reverse_addition}
+
+emmc <- contrast(emm, simple="Op3", method = "trt.vs.ctrl")
+emm_show(emmc)
+
+```
+
+### Addition
+
+Contrasts addition SO vs UBI.L, UBI.R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_reverse_addition, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI-L vs UBI-R addition"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI-L vs UBI-R addition"]])
+
+```
+
+# SO+Rhiz vs UBI+Rhiz.L vs UBI+Rhiz.R [15 min after the bilateral rhizotomy]
+
+```{r so_ubi_lr_rhiz}
+
+dta_SO_UBI <-
+  dta %>%
+  filter(TrtGroup %in% c("SO+Rhiz", "UBI+Rhiz")) %>%
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(Operation == "SO", paste0(Operation, "+Rhiz"), paste0(Operation, "+Rhiz.", OperationSide)),
+    Op3 = factor(Op3)
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_so_ubi_rhiz}
+
+myname <- "SF 0-2 span=0.4 [SO+Rhiz vs UBI+Rhiz]"
+
+plt[["SO+Rhiz vs UBI+Rhiz"]] <- 
+  dta_SO_UBI %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SO+Rhiz vs UBI+Rhiz"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_so_ubi_rhiz, echo=FALSE}
+
+d.sum <- dta_SO_UBI %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_so_ubi_rhiz, include=FALSE}
+
+get_prior(data = dta_SO_UBI,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_so_ubi_rhiz}
+
+std.prior <- brm(
+  data = dta_SO_UBI,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_ubi_rhiz_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R prior check"]])
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_so_ubi_rhiz, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_ubi_rhiz_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_so_ubi_rhiz_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_so_ubi_rhiz}
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_so_ubi_rhiz}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response")
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_so_ubi_rhiz, echo=FALSE, fig.width = 8}
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R emm"]])
+
+```
+
+Estimated model medians +- 95% HPDCI: ("x" - mean values of measurements for each rat)
+
+```{r points_sf_emm2_so_ubi_rhiz, echo=FALSE, fig.width=8}
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R emm with Data Points"]] <- 
+  plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_SO_UBI %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_so_ubi_rhiz, echo=FALSE}
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_so_ubi_rhiz, echo=FALSE}
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ccdfinterval"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers: ("x" - mean values of measurements for each rat)
+
+```{r points_sf_ccdfinterval_so_ubi_rhiz, echo=FALSE, fig.width=8}
+
+plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ccdfinterval with Data Points"]] <- 
+  plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_SO_UBI %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts SO+Rhiz vs UBI+Rhiz.L vs UBI+Rhiz.R as a table:
+
+```{r sf_contrasts_so_ubi_rhiz}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts SO+Rhiz vs UBI+Rhiz.L vs UBI+Rhiz.R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_rhiz, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R"]])
+
+```
+
+Contrasts reverse SO+Rhiz vs UBI+Rhiz.L vs UBI+Rhiz.R as a table:
+
+```{r sf_contrasts_so_ubi_rhiz_reverse}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts reverse SO+Rhiz vs UBI+Rhiz.L vs UBI+Rhiz.R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_rhiz_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R reverse"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R reverse"]])
+
+```
+
+### Addition
+
+Contrasts SO+Rhiz vs UBI+Rhiz.L, UBI+Rhiz.R as a table:
+
+```{r sf_contrasts_so_ubi_rhiz_addition}
+
+emmc <- contrast(emm, simple="Op3", method = "trt.vs.ctrl")
+emm_show(emmc)
+
+```
+
+Contrasts SO+Rhiz vs UBI+Rhiz.L, UBI+Rhiz.R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_rhiz_addition, echo=FALSE, fig.width = 8}
+
+plt[["SF addition by SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF addition by SO+Rhiz vs UBI+Rhiz-L vs UBI+Rhiz-R"]])
+
+```
+
+# UBI-[L,R] vs UBI+Rhiz-[L,R]
+
+```{r ubi_lr_rhiz_addition}
+
+dta_filtered <- 
+  dta %>%
+  filter(TrtGroup %in% c("UBI", "UBI+Rhiz")) %>%
+  ungroup %>% 
+  droplevels(.)
+
+RatsID.UBI.Rhiz <- 
+  dta_filtered %>% 
+  filter(TrtGroup %in% c("UBI+Rhiz")) %>% 
+  summarise(ID = unique(RatID))
+
+dta_UBI_Rhiz <-
+  dta_filtered %>%
+  filter(RatID %in% RatsID.UBI.Rhiz$ID) %>%
+  ungroup %>% 
+  droplevels(.) %>% 
+  mutate(
+    Op2 = paste0(Operation, ".", OperationSide),
+    Op2 = factor(Op2),
+    
+    Time = ifelse(TrtGroup == "UBI", "Post", "Post+Rhiz"),
+    
+    Time = factor(Time, c("Post", "Post+Rhiz"))
+  )
+
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_ubi_lr_rhiz_addition}
+
+myname <- "SF 0-2 span=0.4 [UBI-[L,R] vs UBI+Rhiz-[L,R] addition]"
+
+plt[["UBI-[L,R] vs UBI+Rhiz-[L,R] addition"]] <- 
+  dta_UBI_Rhiz %>% 
+  group_by(Op2, Time, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(Time, dT, sep=", ", drop=TRUE), y=W, fill=Op2)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["UBI-[L,R] vs UBI+Rhiz-[L,R] addition"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_ubi_lr_rhiz_addition, echo=FALSE}
+
+d.sum <- dta_UBI_Rhiz %>% 
+  arrange(Op2, Time) %>% 
+  group_by(Op2, Time) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op2), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_ubi_lr_rhiz_addition, include=FALSE}
+
+get_prior(data = dta_UBI_Rhiz,
+  family = student,
+  W ~ 0 + Op2:Time + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_ubi_lr_rhiz_addition}
+
+std.prior <- brm(
+  data = dta_UBI_Rhiz,
+  family = student,
+  W ~ 0 + Op2:Time + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "addition_v1_ubi_rhiz_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op2",
+                                method="fitted",
+                                conditions=make_conditions(dta_UBI_Rhiz, vars = c("Time"))
+                                )
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] prior check"]])
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_ubi_lr_rhiz_addition, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "addition_v1_ubi_rhiz_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_ubi_lr_rhiz_MCMC_ppcheck_addition}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_ubi_lr_rhiz_addition}
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_ubi_lr_rhiz_addition}
+
+emm <- emmeans(std.fit, ~ Op2*Time, transform = "response", nesting=NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_ubi_lr_rhiz_addition, echo=FALSE, fig.width = 8}
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Time, Op2, sep=", ", drop=TRUE), y = .value, fill = Op2)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] emm"]])
+
+```
+
+```{r points_sf_emm2_ubi_lr_rhiz_addition, echo=FALSE, fig.width=8}
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] emm with Data Points"]] <- 
+  plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_UBI_Rhiz %>%
+          group_by(RatID, Op2, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_ubi_lr_rhiz_addition, echo=FALSE}
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Time, Op2, sep=", ", drop=TRUE), y = .value, fill = Op2)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_ubi_lr_rhiz_addition, echo=FALSE}
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Time, Op2, sep=", ", drop=TRUE), y = .value, fill = Op2)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval"]])
+
+```
+
+```{r points_sf_ccdfinterval_ubi_lr_rhiz_addition, echo=FALSE, fig.width=8}
+
+plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval with Data Points"]] <- 
+  plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_UBI_Rhiz %>%
+          group_by(RatID, Op2, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF addition UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts UBI-[L,R] vs UBI+Rhiz-[L,R] as a table:
+
+```{r sf_contrasts_ubi_lr_rhiz_addition}
+
+emmc <- contrast(emm, simple = "Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts "between time":
+
+```{r sf_by_time_ubi_lr_rhiz_addition, echo=FALSE, fig.width = 8}
+
+plt[["SF addition by Time UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% 
+  ggplot(aes(x = interaction(Op2, contrast, sep=", ", drop=TRUE), y = .value, fill = Op2)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF addition by Time UBI-[L,R] vs UBI+Rhiz-[L,R]"]])
+
+```
+
+Contrasts reverse UBI-[L,R] vs UBI+Rhiz-[L,R] as a table:
+
+```{r sf_contrasts_ubi_lr_rhiz_addition_reverse}
+
+emmc <- contrast(emm, simple = "Time", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts "between time":
+
+```{r sf_by_time_ubi_lr_rhiz_addition_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF reverse addition by Time UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% 
+  ggplot(aes(x = interaction(Op2, contrast, sep=", ", drop=TRUE), y = .value, fill = Op2)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF reverse addition by Time UBI-[L,R] vs UBI+Rhiz-[L,R]"]])
+
+```
+
+## SF $\Delta W$: Contrasts of contrasts
+
+Contrasts of contrasts UBI-[L,R] vs UBI+Rhiz-[L,R] as a table:
+
+```{r sf_contrasts_of_contrasts_ubi_lr_rhiz_addition}
+
+emmc1 <- contrast(emm, simple = "Time", method = "pairwise")
+emmc <- contrast(emmc1, simple = "Op2", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts UBI-[L,R] vs UBI+Rhiz-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_ubi_lr_rhiz_contrasts_of_contrasts_addition, echo=FALSE, fig.width = 8}
+
+plt[["SF contrasts of contrasts addition by UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF contrasts of contrasts addition by UBI-[L,R] vs UBI+Rhiz-[L,R]"]])
+
+```
+
+Contrasts of contrasts UBI-[L,R] vs UBI+Rhiz-[L,R] as a table:
+
+```{r sf_contrasts_of_contrasts_reverse_ubi_lr_rhiz_addition}
+
+emmc1 <- contrast(emm, simple = "Time", method = "revpairwise")
+emmc <- contrast(emmc1, simple = "Op2", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts UBI-[L,R] vs UBI+Rhiz-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_ubi_lr_rhiz_contrasts_of_contrasts_reverse_addition, echo=FALSE, fig.width = 8}
+
+plt[["SF contrasts of contrasts (reverse) addition by UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF contrasts of contrasts (reverse) addition by UBI-[L,R] vs UBI+Rhiz-[L,R]"]])
+
+```
+
+# preADX vs ADX-L vs ADX-R
+
+```{r preadx_adx}
+
+dta_ADX <-
+  dta %>%
+  filter(TrtGroup %in% c("preADX", "ADX")) %>%
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(TrtGroup == "preADX", "preADX", paste0(TrtGroup, ".", OperationSide)),
+    Op3 = factor(Op3)
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_preadx_adx}
+
+myname <- "SF 0-2 span=0.4 [preADX vs ADX-L vs ADX-R]"
+
+plt[["preADX vs ADX-L vs ADX-R"]] <- 
+  dta_ADX %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["preADX vs ADX-L vs ADX-R"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_preadx_adx, echo=FALSE}
+
+d.sum <- dta_ADX %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_preadx_adx, include=FALSE}
+
+get_prior(data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_preadx_adx}
+
+std.prior <- brm(
+  data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "preadx_adx_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF preADX vs ADX-L vs ADX-R prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF preADX vs ADX-L vs ADX-R prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF preADX vs ADX-L vs ADX-R prior check"]])
+print(plt[["SF preADX vs ADX-L vs ADX-R prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_preadx_adx, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "preadx_adx_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_preadx_adx}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF preADX vs ADX-L vs ADX-R pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF preADX vs ADX-L vs ADX-R pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_preadx_adx}
+
+plt[["SF preADX vs ADX-L vs ADX-R ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF preADX vs ADX-L vs ADX-R ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_preadx_adx}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response")
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_preadx_adx, echo=FALSE, fig.width = 8}
+
+plt[["SF preADX vs ADX-L vs ADX-R emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF preADX vs ADX-L vs ADX-R emm"]])
+
+```
+
+```{r points_sf_emm2_preadx_adx, echo=FALSE, fig.width=8}
+
+plt[["SF preADX vs ADX-L vs ADX-R emm with Data Points"]] <- 
+  plt[["SF preADX vs ADX-L vs ADX-R emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF preADX vs ADX-L vs ADX-R emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_preadx_adx, echo=FALSE}
+
+plt[["SF preADX vs ADX-L vs ADX-R bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF preADX vs ADX-L vs ADX-R bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_preadx_adx, echo=FALSE}
+
+plt[["SF preADX vs ADX-L vs ADX-R ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF preADX vs ADX-L vs ADX-R ccdfinterval"]])
+
+```
+
+```{r points_sf_ccdfinterval_preadx_adx, echo=FALSE, fig.width=8}
+
+plt[["SF preADX vs ADX-L vs ADX-R ccdfinterval with Data Points"]] <- 
+  plt[["SF preADX vs ADX-L vs ADX-R ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF preADX vs ADX-L vs ADX-R ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts preADX vs ADX-L vs ADX-R as a table:
+
+```{r sf_contrasts_preadx_adx}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts preADX vs ADX-L vs ADX-R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_preadx_adx, echo=FALSE, fig.width = 8}
+
+plt[["SF by preADX vs ADX-L vs ADX-R"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by preADX vs ADX-L vs ADX-R"]])
+
+```
+
+Contrasts reverse preADX vs ADX-L vs ADX-R as a table:
+
+```{r sf_contrasts_preadx_adx_reverse}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts reverse preADX vs ADX-L vs ADX-R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_preadx_adx_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF by preADX vs ADX-L vs ADX-R reverse"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by preADX vs ADX-L vs ADX-R reverse"]])
+
+```
+
+# ADX vs ADX+UBI-L vs ADX+UBI-R
+
+```{r adx_adxubi}
+
+dta_ADX <-
+  dta %>%
+  filter(TrtGroup %in% c("ADX", "ADX+UBI")) %>%
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(TrtGroup == "ADX", "ADX", paste0(TrtGroup, ".", OperationSide)),
+    Op3 = factor(Op3)
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_adx_adxubi}
+
+myname <- "SF 0-2 span=0.4 [ADX vs ADX+UBI-L vs ADX+UBI-R]"
+
+plt[["adx_adxubi"]] <- 
+  dta_ADX %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["adx_adxubi"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_adx_adxubi, echo=FALSE}
+
+d.sum <- dta_ADX %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_adx_adxubi, include=FALSE}
+
+get_prior(data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_adx_adxubi}
+
+std.prior <- brm(
+  data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "adx_adxubi_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R prior check"]])
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_adx_adxubi, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "adx_adxubi_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_adx_adxubi}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R pp_check (hand)"]] <- pp_check(std.fit, ndraws = 11)
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_adx_adxubi}
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ac (hand)"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_adx_adxubi}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response")
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_adx_adxubi, echo=FALSE, fig.width = 8}
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R emm"]])
+
+```
+
+```{r points_sf_emm2_adx_adxubi, echo=FALSE, fig.width=8}
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R emm with Data Points"]] <- 
+  plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_adx_adxubi, echo=FALSE}
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_adx_adxubi, echo=FALSE}
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ccdfinterval"]])
+
+```
+
+```{r points_sf_ccdfinterval_adx_adxubi, echo=FALSE, fig.width=8}
+
+plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ccdfinterval with Data Points"]] <- 
+  plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF ADX vs ADX+UBI-L vs ADX+UBI-R ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts ADX vs ADX+UBI-L vs ADX+UBI-R as a table:
+
+```{r sf_contrasts_adx_adxubi}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts ADX vs ADX+UBI-L vs ADX+UBI-R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_adx_adxubi, echo=FALSE, fig.width = 8}
+
+plt[["SF by ADX vs ADX+UBI-L vs ADX+UBI-R"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by ADX vs ADX+UBI-L vs ADX+UBI-R"]])
+
+```
+Contrasts reverse ADX vs ADX+UBI-L vs ADX+UBI-R as a table:
+
+```{r sf_contrasts_adx_adxubi_reverse}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts reverse ADX vs ADX+UBI-L vs ADX+UBI-R as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_adx_adxubi_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF by ADX vs ADX+UBI-L vs ADX+UBI-R reverse"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by ADX vs ADX+UBI-L vs ADX+UBI-R reverse"]])
+
+```
+# SO vs UBI vs ADX+UBI (L + R) [3 hrs after the brain surgery]
+
+```{r so_ubi_adx}
+
+dta_ADX <-
+  dta %>%
+  filter(TrtGroup %in% c("SO", "UBI", "ADX+UBI")) %>%
+  droplevels(.) %>%
+  mutate(
+    # Op3 = ifelse(TrtGroup == "SO", "SO", paste0(TrtGroup, ".", OperationSide)),
+    Op3 = TrtGroup,
+    Op3 = factor(Op3)
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_so_ubi_adx}
+
+myname <- "SF 0-2 span=0.4 [SO vs UBI vs ADX+UBI (L + R)]"
+
+plt[["SO vs UBI vs ADX+UBI (L + R)"]] <- 
+  dta_ADX %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SO vs UBI vs ADX+UBI (L + R)"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_so_ubi_adx, echo=FALSE}
+
+d.sum <- dta_ADX %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_so_ubi_adx, include=FALSE}
+
+get_prior(data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_so_ubi_adx}
+
+std.prior <- brm(
+  data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_ubi_adx_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF SO vs UBI vs ADX+UBI (L + R) prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) prior check"]])
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_so_ubi_adx, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_ubi_adx_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_so_ubi_adx}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) pp_check"]] <- pp_check(std.fit, ndraws = 11)
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_so_ubi_adx}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_so_ubi_adx}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response")
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_so_ubi_adx, echo=FALSE, fig.width = 8}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) emm"]])
+
+```
+
+```{r points_sf_emm2_so_ubi_adx, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) emm with Data Points"]] <- 
+  plt[["SF SO vs UBI vs ADX+UBI (L + R) emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_so_ubi_adx, echo=FALSE}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_so_ubi_adx, echo=FALSE}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval"]])
+
+```
+
+```{r points_sf_ccdfinterval_so_ubi_adx, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval with Data Points"]] <- 
+  plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts SO vs UBI vs ADX+UBI (L + R) as a table:
+
+```{r sf_contrasts_so_ubi_adx}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts SO vs UBI vs ADX+UBI (L + R) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_adx, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI vs ADX+UBI (L + R)"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI vs ADX+UBI (L + R)"]])
+
+```
+
+Contrasts reverse SO vs UBI vs ADX+UBI (L + R) as a table:
+
+```{r sf_contrasts_so_ubi_adx_reverse}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts reverse SO vs UBI vs ADX+UBI (L + R) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_adx_reverse, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI vs ADX+UBI (L + R) reverse"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI vs ADX+UBI (L + R) reverse"]])
+
+```
+
+# SO vs UBI vs ADX+UBI (L + R) 0min and 180min
+
+```{r so_ubi_adx_0min_180min}
+
+dta_ADX <-
+  dta %>%
+  filter(TrtGroup %in% c("preSO", "SO", "preUBI", "UBI", "preADX", "ADX+UBI")) %>% 
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(TrtGroup %in% c("preSO", "SO"), Operation, 
+                 ifelse(TrtGroup %in% c("preADX", "ADX+UBI"), "ADX", Operation)),
+    Op3 = factor(Op3),
+    Time = ifelse(TrtGroup %in% c("preSO", "preUBI", "preADX"), "Pre", "Post"),
+    Time = factor(Time, c("Pre", "Post"))
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_so_ubi_adx_0min_180min}
+
+myname <- "SF 0-2 span=0.4 [SO vs UBI vs ADX+UBI (L + R) 0min and 180min]"
+
+plt[["SO vs UBI vs ADX+UBI (L + R) 0min and 180min"]] <- 
+  dta_ADX %>%
+  group_by(Op3, dT, Time) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, Time, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SO vs UBI vs ADX+UBI (L + R) 0min and 180min"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_so_ubi_adx_0min_180min, echo=FALSE}
+
+d.sum <- dta_ADX %>% 
+  arrange(Op3, Time) %>% 
+  group_by(Op3, Time) %>% 
+  summarise( rats = length(unique(RatID)), .groups="drop") %>%
+  pivot_wider(names_from=c(Time), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_so_ubi_adx_0min_180min, include=FALSE}
+
+get_prior(data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3:Time + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_so_ubi_adx_0min_180min}
+
+std.prior <- brm(
+  data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3:Time + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+  # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_ubi_adx_check_prior_0min_180min.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                conditions=make_conditions(dta_ADX, vars = c("Time"))
+                                )
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) prior check 0min and 180min"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF SO vs UBI vs ADX+UBI (L + R) prior pp_check 0min and 180min"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) prior check 0min and 180min"]])
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) prior pp_check 0min and 180min"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_so_ubi_adx_0min_180min, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_ubi_adx_model_summary_max_treedepth=15_0min_180min.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_so_ubi_adx_0min_180min}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) pp_check 0min and 180min"]] <- pp_check(std.fit, ndraws = 11)
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) pp_check 0min and 180min"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_so_ubi_adx_0min_180min}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) ac 0min and 180min"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) ac 0min and 180min"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_so_ubi_adx_0min_180min}
+
+emm <- emmeans(std.fit, ~ Op3*Time, transform = "response", nesting=NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_so_ubi_adx_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) emm 0min and 180min"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, Time, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) emm 0min and 180min"]])
+
+```
+
+```{r points_sf_emm2_so_ubi_adx_0min_180min, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) emm with Data Points 0min and 180min"]] <- 
+  plt[["SF SO vs UBI vs ADX+UBI (L + R) emm 0min and 180min"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) emm with Data Points 0min and 180min"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_so_ubi_adx_0min_180min, echo=FALSE}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) bar whiskers 0min and 180min"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, Time, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) bar whiskers 0min and 180min"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_so_ubi_adx_0min_180min, echo=FALSE}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval 0min and 180min"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, Time, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval 0min and 180min"]])
+
+```
+
+```{r points_sf_ccdfinterval_so_ubi_adx_0min_180min, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval with Data Points 0min and 180min"]] <- 
+  plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval 0min and 180min"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI vs ADX+UBI (L + R) ccdfinterval with Data Points 0min and 180min"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts SO vs UBI vs ADX+UBI (L + R) as a table:
+
+```{r sf_contrasts_so_ubi_adx_0min_180min}
+
+emmc <- rbind(contrast(emm, simple="Op3", method = "pairwise"),
+              contrast(emm, simple="Time", method = "consec", reverse=TRUE))
+emm_show(emmc)
+
+```
+
+Contrasts by trt SO vs UBI vs ADX+UBI (L + R) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_adx_0min_180min_trt, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI vs ADX+UBI (L + R) by trt 0min and 180min"]] <- emmc %>% gather_emmeans_draws %>%
+  filter(Op3 == ".") %>% 
+  ggplot(aes(x = interaction(contrast, Time, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI vs ADX+UBI (L + R) by trt 0min and 180min"]])
+
+```
+
+
+Contrasts by Time SO vs UBI vs ADX+UBI (L + R) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_adx_0min_180min_time, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI vs ADX+UBI (L + R) by Time 0min and 180min"]] <- emmc %>% gather_emmeans_draws %>%
+  filter(Time == ".") %>% 
+  ggplot(aes(x = interaction(contrast, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI vs ADX+UBI (L + R) by Time 0min and 180min"]])
+
+```
+
+## SF $\Delta W$: Contrasts of contrasts
+
+Contrasts SO vs UBI vs ADX+UBI (L + R) as a table:
+
+```{r sf_contrasts_of_contrasts_so_ubi_adx_0min_180min}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emmc <- contrast(emmc, simple="Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts of contrasts SO vs UBI vs ADX+UBI (L + R) as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_adx_0min_180min_contr_of_contr, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI vs ADX+UBI (L + R) 0min and 180min Contrasts of contrasts"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI vs ADX+UBI (L + R) 0min and 180min Contrasts of contrasts"]])
+
+```
+# SO vs UBI [L, R] vs ADX+UBI [L, R] [3 hrs after the brain surgery]
+
+```{r so_ubi_adx_all_side}
+
+dta_ADX <-
+  dta %>%
+  filter(TrtGroup %in% c("SO", "UBI", "ADX+UBI")) %>%
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(TrtGroup == "SO", "SO", paste0(TrtGroup, ".", OperationSide)),
+    # Op3 = TrtGroup,
+    Op3 = factor(Op3)
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_so_ubi_adx_all_side}
+
+myname <- "SF 0-2 span=0.4 [SO vs UBI [L, R] vs ADX+UBI [L, R]]"
+
+plt[["SO vs UBI [L, R] vs ADX+UBI [L, R]"]] <- 
+  dta_ADX %>% 
+  group_by(Op3, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SO vs UBI [L, R] vs ADX+UBI [L, R]"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_so_ubi_adx_all_side, echo=FALSE}
+
+d.sum <- dta_ADX %>% 
+  arrange(Op3) %>% 
+  group_by(Op3) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_so_ubi_adx_all_side, include=FALSE}
+
+get_prior(data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_so_ubi_adx_all_side}
+
+std.prior <- brm(
+  data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3 + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_ubi_adx_all_side_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                # conditions=make_conditions(data_hand_SO, vars = c("Time"))
+                                )
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior check"]])
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_so_ubi_adx_all_side, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_ubi_adx_all_side_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_MCMC_ppcheck_so_ubi_adx_all_side}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] pp_check"]] <- pp_check(std.fit, ndraws = 11)
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_so_ubi_adx_all_side}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_so_ubi_adx_all_side}
+
+emm <- emmeans(std.fit, ~ Op3, transform = "response")
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_so_ubi_adx_all_side, echo=FALSE, fig.width = 8}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm"]])
+
+```
+
+```{r points_sf_emm2_so_ubi_adx_all_side, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm with Data Points"]] <- 
+  plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_so_ubi_adx_all_side, echo=FALSE}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_so_ubi_adx_all_side, echo=FALSE}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval"]])
+
+```
+
+```{r points_sf_ccdfinterval_so_ubi_adx_all_side, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval with Data Points"]] <- 
+  plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval with Data Points"]])
+
+```
+
+
+## SF $\Delta W$: Contrasts
+
+Contrasts SO vs UBI [L, R] vs ADX+UBI [L, R] as a table:
+
+```{r sf_contrasts_so_ubi_adx_all_side}
+
+emmc <- contrast(emm, simple="Op3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts SO vs UBI [L, R] vs ADX+UBI [L, R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_by_so_ubi_adx_all_side, echo=FALSE, fig.width = 8}
+
+plt[["SF by SO vs UBI [L, R] vs ADX+UBI [L, R]"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF by SO vs UBI [L, R] vs ADX+UBI [L, R]"]])
+
+```
+
+# SO vs UBI [L, R] vs ADX+UBI [L, R] [0min(SO, UBI, ADX) and 180min(SO, UBI)/15+180min(ADX+UBI)]
+
+```{r pre_post_so_ubi_adx_all_side}
+
+dta_ADX <-
+  dta %>%
+  filter(TrtGroup %in% c("preSO", "SO", "preUBI", "UBI", "preADX", "ADX+UBI")) %>% 
+  droplevels(.) %>%
+  mutate(
+    Op3 = ifelse(TrtGroup %in% c("preSO", "SO"), Operation, 
+                 ifelse(TrtGroup %in% c("preADX", "ADX+UBI"), paste0("ADX", ".", OperationSide), paste0(Operation, ".", OperationSide))),
+    Op3 = factor(Op3),
+    Time = ifelse(TrtGroup %in% c("preSO", "preUBI", "preADX"), "Pre", "Post"),
+    Time = factor(Time, c("Pre", "Post"))
+  )
+
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r pre_post_plot_bars_hpdci_so_ubi_adx_all_side}
+
+myname <- "SF 0-2 span=0.4 [SO vs UBI [L, R] vs ADX+UBI [L, R]] 0min and 180min"
+
+plt[["SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]] <- 
+  dta_ADX %>% 
+  group_by(Op3, dT, Time) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(dT, Time, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r pre_post_input2_so_ubi_adx_all_side, echo=FALSE}
+
+d.sum <- dta_ADX %>% 
+  arrange(Op3, Time) %>% 
+  group_by(Op3, Time) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r pre_post_get_prior_so_ubi_adx_all_side, include=FALSE}
+
+get_prior(data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3:Time + weight + repN + (1|RatID))
+
+```
+
+
+```{r pre_post_sf_check_prior_so_ubi_adx_all_side}
+
+std.prior <- brm(
+  data = dta_ADX,
+  family = student,
+  W ~ 0 + Op3:Time + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_ubi_adx_all_side_check_prior_with_time.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                conditions=make_conditions(dta_ADX, vars = c("Time"))
+                                )
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior check 0min and 180min"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior pp_check 0min and 180min"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior check 0min and 180min"]])
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] prior pp_check 0min and 180min"]])
+
+```
+
+Model fit and QC:
+
+```{r pre_post_sf_model_summary_so_ubi_adx_all_side, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_ubi_adx_all_side_model_summary_max_treedepth=15_with_time.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r pre_post_sf_MCMC_ppcheck_so_ubi_adx_all_side}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] pp_check 0min and 180min"]] <- pp_check(std.fit, ndraws = 11)
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] pp_check 0min and 180min"]])
+
+```
+
+Autocorrelations
+
+```{r pre_post_sf_MCMC_ac_so_ubi_adx_all_side}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ac 0min and 180min"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ac 0min and 180min"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r pre_post_sf_emm_so_ubi_adx_all_side}
+
+emm <- emmeans(std.fit, ~ Op3*Time, transform = "response", nesting=NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r pre_post_sf_emm2_so_ubi_adx_all_side, echo=FALSE, fig.width = 8}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm 0min and 180min"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Op3, Time, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm 0min and 180min"]])
+
+```
+
+```{r pre_post_points_sf_emm2_so_ubi_adx_all_side, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm with Data Points 0min and 180min"]] <- 
+  plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm 0min and 180min"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] emm with Data Points 0min and 180min"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r pre_post_sf_bar_whiskers_so_ubi_adx_all_side, echo=FALSE}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] bar whiskers 0min and 180min"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Op3, Time, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] bar whiskers 0min and 180min"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r pre_post_sf_ccdfinterval_so_ubi_adx_all_side, echo=FALSE}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval 0min and 180min"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Op3, Time, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval 0min and 180min"]])
+
+```
+
+```{r pre_post_points_sf_ccdfinterval_so_ubi_adx_all_side, echo=FALSE, fig.width=8}
+
+plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval with Data Points 0min and 180min"]] <- 
+  plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval 0min and 180min"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX %>%
+          group_by(RatID, Op3, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF SO vs UBI [L, R] vs ADX+UBI [L, R] ccdfinterval with Data Points 0min and 180min"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts SO vs UBI [L, R] vs ADX+UBI [L, R] as a table:
+
+```{r pre_post_sf_contrasts_so_ubi_adx_all_side}
+
+emmc <- rbind(contrast(emm, simple="Op3", method = "pairwise"),
+              contrast(emm, simple="Time", method="consec", reverse=TRUE))
+
+emm_show(emmc)
+
+```
+
+Contrasts SO vs UBI [L, R] vs ADX+UBI [L, R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r pre_post_sf_by_so_ubi_adx_all_side_trt, echo=FALSE, fig.width = 8}
+
+plt[["SF trt by SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]] <- emmc %>% gather_emmeans_draws %>% filter(Op3 == ".") %>% 
+  ggplot(aes(x = interaction(Time, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF trt by SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]])
+
+```
+
+```{r pre_post_sf_by_so_ubi_adx_all_side_time, echo=FALSE, fig.width = 8}
+
+plt[["SF time by SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]] <- emmc %>% gather_emmeans_draws %>% filter(Time == ".") %>% 
+  ggplot(aes(x = interaction(Op3, contrast, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF time by SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]])
+
+```
+
+## SF $\Delta W$: Contrasts of contrasts
+
+Contrasts of contrasts SO vs UBI [L, R] vs ADX+UBI [L, R] as a table:
+
+```{r pre_post_sf_contrasts_of_contrasts_so_ubi_adx_all_side}
+
+emmc <- contrast(emm, simple="Op3", method = "pairwise")
+emmc <- contrast(emmc, simple="Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts of contrasts SO vs UBI [L, R] vs ADX+UBI [L, R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r pre_post_sf_by_so_ubi_adx_all_side_contrasts_of_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["SF Contrasts of contrasts by SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]] <- emmc %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="0-2 sec", y="dW, between operations")
+
+print(plt[["SF Contrasts of contrasts by SO vs UBI [L, R] vs ADX+UBI [L, R] 0min and 180min"]])
+
+```
+<!-- # preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] -->
+
+<!-- ```{r pre_so_ubi_lr_rhiz} -->
+
+<!-- dta_SO_UBI_Rhiz <- -->
+<!--   dta %>% -->
+<!--   filter(TrtGroup %in% c("preSO", "preUBI", "SO", "UBI", "SO+Rhiz", "UBI+Rhiz")) %>% -->
+<!--   ungroup %>%  -->
+<!--   droplevels(.) %>% -->
+<!--   mutate( -->
+<!--     Op3 = ifelse(Operation == "SO", "SO", paste0(Operation, ".", OperationSide)), -->
+<!--     Op3 = factor(Op3), -->
+<!--     Time = ifelse(TrtGroup %in% c("preSO", "preUBI"), "Pre", -->
+<!--                   ifelse(TrtGroup %in% c("SO", "UBI"), "Post", "Post+Rhiz")), -->
+<!--     Time = factor(Time, c("Pre", "Post", "Post+Rhiz")) -->
+<!--   ) -->
+
+<!-- ``` -->
+
+<!-- The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model. -->
+
+<!-- ```{r plot_bars_hpdci_pre_so_ubi_lr_rhiz} -->
+
+<!-- myname <- "SF 0-2 span=0.4 [preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]]" -->
+
+<!-- plt[["preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <-  -->
+<!--   dta_SO_UBI_Rhiz %>%  -->
+<!--   group_by(Op3, Time, dT) %>%  -->
+<!--   median_hdci(W, .width = 0.95) %>% -->
+<!--   ungroup() %>% -->
+<!--   ggplot(aes(x=interaction(Time, dT, sep=", ", drop=TRUE), y=W, fill=Op3)) +  -->
+<!--     geom_bar(position=position_dodge(), stat="identity") + -->
+<!--     geom_errorbar(aes(ymin=.lower, ymax=.upper), -->
+<!--                   width=.2,   # Width of the error bars -->
+<!--                   position=position_dodge(.9)) + -->
+<!--     geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--     theme(axis.text.x = element_text(angle = 30, hjust = 1)) + -->
+<!--     labs(title=myname, x="Medians and 95% HDCI", y="dW") -->
+
+<!-- print(plt[["preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+<!-- The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates) -->
+
+<!-- ```{r input2_pre_so_ubi_lr_rhiz, echo=FALSE} -->
+
+<!-- d.sum <- dta_SO_UBI_Rhiz %>%  -->
+<!--   arrange(Op3, Time) %>%  -->
+<!--   group_by(Op3, Time) %>%  -->
+<!--   summarise( rats = length(unique(RatID)) ) %>% -->
+<!--   pivot_wider(names_from=c(Op3), values_from=rats) -->
+
+<!-- d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit -->
+
+<!-- ``` -->
+
+<!-- ## SF $\Delta W$: Bayesian regression, student family -->
+
+<!-- Prior predictive check -->
+
+<!-- ```{r get_prior_pre_so_ubi_lr_rhiz, include=FALSE} -->
+
+<!-- get_prior(data = dta_SO_UBI_Rhiz, -->
+<!--   family = student, -->
+<!--   W ~ 0 + Op3:Time + weight + repN + (1|RatID)) -->
+
+<!-- ``` -->
+
+
+<!-- ```{r sf_check_prior_pre_so_ubi_lr_rhiz} -->
+
+<!-- std.prior <- brm( -->
+<!--   data = dta_SO_UBI_Rhiz, -->
+<!--   family = student, -->
+<!--   W ~ 0 + Op3:Time + weight + repN + (1|RatID), -->
+<!--   # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders -->
+<!--     # W ~ 0 + Op3:dT + weight + repN + (1|RatID), -->
+<!--   # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders -->
+<!--   prior = c(prior(student_t(3, 0, 10), class = "sigma"), -->
+<!--             prior(student_t(3, 0, 10), class = "sd"), -->
+<!--             prior(normal(0, 10), class = "b")), -->
+<!--   seed = my.seed,  -->
+<!--   chains = my.cores,  -->
+<!--   cores = my.cores,  -->
+<!--   iter = 4e4, -->
+<!--   sample_prior = "only", -->
+<!--   file = paste0(rds_folder_name, "v1_pre_so_ubi_rhiz_check_prior.rds"), -->
+<!--   file_refit = "on_change" -->
+<!-- ) -->
+
+
+<!-- cond_eff <- conditional_effects(std.prior, -->
+<!--                                 "Op3", -->
+<!--                                 method="fitted", -->
+<!--                                 conditions=make_conditions(dta_SO_UBI_Rhiz, vars = c("Time")) -->
+<!--                                 ) -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] prior check"]] <- plot(cond_eff, -->
+<!--                                        points = TRUE, -->
+<!--                                        point_args = list(width = 0.1, shape="o", col="red"), -->
+<!--                                        plot=FALSE)[[1]] + -->
+<!--                                   geom_hline(yintercept=0, linetype="dashed", color="black") -->
+
+<!-- set.seed(2) -->
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] prior pp_check"]] <- pp_check(std.prior, ndraws = 11) -->
+
+<!-- print(cond_eff[[1]]) -->
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] prior check"]]) -->
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] prior pp_check"]]) -->
+
+<!-- ``` -->
+
+<!-- Model fit and QC: -->
+
+<!-- ```{r sf_model_summary_pre_so_ubi_lr_rhiz, echo=FALSE, fig.width = 10} -->
+
+<!-- std.fit <-  update(std.prior,  -->
+<!--                    sample_prior = "yes", -->
+<!--                    # control = list(adapt_delta = 0.99), -->
+<!--                    control = list(max_treedepth = 15), -->
+<!--                    seed = my.seed,  -->
+<!--                    cores = my.cores, -->
+<!--                    file = paste0(rds_folder_name, "v1_pre_so_ubi_rhiz_model_summary_max_treedepth=15.rds"), -->
+<!--                    file_refit = "on_change") -->
+<!-- summary(std.fit) -->
+
+<!-- print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE)) -->
+
+<!-- ``` -->
+
+
+<!-- ## SF $\Delta W$: MCMC conversion diagnostics -->
+
+<!-- Posterior predictive check -->
+
+<!-- ```{r sf_pre_so_ubi_lr_rhiz_MCMC_ppcheck} -->
+
+<!-- set.seed(2) # reproducible pp_check -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] pp_check"]] <- pp_check(std.fit, ndraws = 21) -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] pp_check"]]) -->
+
+<!-- ``` -->
+
+<!-- Autocorrelations -->
+
+<!-- ```{r sf_MCMC_ac_pre_so_ubi_lr_rhiz} -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ac"]] <- stan_ac(std.fit$fit) -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ac"]]) -->
+
+<!-- ``` -->
+
+<!-- ## SF $\Delta W$: Estimated model marginals -->
+
+<!-- Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table: -->
+
+<!-- ```{r sf_emm_pre_so_ubi_lr_rhiz} -->
+
+<!-- emm <- emmeans(std.fit, ~ Op3*Time, transform = "response", nesting=NULL) -->
+<!-- emm_show(emm) -->
+
+<!-- ``` -->
+
+<!-- Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval): -->
+
+<!-- ```{r sf_emm2_pre_so_ubi_lr_rhiz, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] emm"]] <- emm %>% emm_inorder %>% -->
+<!--   ggplot(aes(x = interaction(Time, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW") -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] emm"]]) -->
+
+<!-- ``` -->
+
+<!-- ```{r points_sf_emm2_pre_so_ubi_lr_rhiz, echo=FALSE, fig.width=8} -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] emm with Data Points"]] <-  -->
+<!--   plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] emm"]] + -->
+<!--     geom_point( -->
+<!--       pch = 4, -->
+<!--       position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2), -->
+<!--       data = { -->
+<!--         dta_SO_UBI_Rhiz %>% -->
+<!--           group_by(RatID, Op3, Time) %>% -->
+<!--           summarise(.value = mean(W), .groups = "drop") -->
+<!--       }, -->
+<!--       aes(y=.value)) -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] emm with Data Points"]]) -->
+
+<!-- ``` -->
+
+<!-- The bar and whiskers plot: -->
+
+<!-- ```{r sf_bar_whiskers_pre_so_ubi_lr_rhiz, echo=FALSE} -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] bar whiskers"]] <- emm %>% gather_emmeans_draws %>%  -->
+<!--   median_hdci(.width = 0.95) %>%  -->
+<!--   ungroup() %>% -->
+<!--   ggplot(aes(x = interaction(Time, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +  -->
+<!--     geom_bar(position=position_dodge(), aes(y=.value),stat="identity") + -->
+<!--     geom_errorbar(aes(ymin=.lower, ymax=.upper), -->
+<!--                   width=.2,   # Width of the error bars -->
+<!--                   position=position_dodge(.9)) + -->
+<!--     geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--     theme(axis.text.x = element_text(angle = 30, hjust = 1)) + -->
+<!--     labs(title=myname, x="Medians and 95% HDCI", y="dW") -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] bar whiskers"]]) -->
+
+<!-- ``` -->
+
+<!-- The ccdinterval plot with same data as above bars and whiskers: -->
+
+<!-- ```{r sf_ccdfinterval_pre_so_ubi_lr_rhiz, echo=FALSE} -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval"]] <- emm %>% gather_emmeans_draws %>% -->
+<!--   ggplot(aes(x = interaction(Time, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + -->
+<!--   stat_ccdfinterval(point_interval = median_hdci, .width = 0.95, -->
+<!--              shape = 16, point_color = "black", interval_color = "black",  -->
+<!--              position="dodge", slab_color = NA) + -->
+<!--     scale_fill_brewer(palette = "Set2") +  -->
+<!--     scale_color_brewer(palette = "Dark2") + -->
+<!--     theme(axis.text.x = element_text(angle = 30, hjust = 1)) + -->
+<!--   # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW") -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval"]]) -->
+
+<!-- ``` -->
+
+<!-- ```{r points_sf_ccdfinterval_pre_so_ubi_lr_rhiz, echo=FALSE, fig.width=8} -->
+
+<!-- plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval with Data Points"]] <-  -->
+<!--   plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval"]] + -->
+<!--     geom_point( -->
+<!--       pch = 4, -->
+<!--       position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2), -->
+<!--       data = { -->
+<!--         dta_SO_UBI_Rhiz %>% -->
+<!--           group_by(RatID, Op3, Time) %>% -->
+<!--           summarise(.value = mean(W), .groups = "drop") -->
+<!--       }, -->
+<!--       aes(y=.value)) -->
+
+<!-- print(plt[["SF preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] ccdfinterval with Data Points"]]) -->
+
+<!-- ``` -->
+
+<!-- ## SF $\Delta W$: Contrasts -->
+
+<!-- Contrasts preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a table: -->
+
+<!-- ```{r sf_contrasts_pre_so_ubi_lr_rhiz} -->
+
+<!-- emmc <- rbind(contrast(emm, simple = "Op3", method = "pairwise"), -->
+<!--               contrast(emm, simple = "Time", method = "consec", reverse=TRUE)) -->
+<!-- emm_show(emmc) -->
+
+<!-- ``` -->
+
+<!-- Contrasts preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval): -->
+
+<!-- ```{r sf_by_pre_so_ubi_lr_rhiz, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% filter(Op3 == ".") %>%  -->
+<!--   ggplot(aes(x = interaction(Time, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations") -->
+
+<!-- print(plt[["SF by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+<!-- Contrasts "between time": -->
+
+<!-- ```{r sf_by_time_pre_so_ubi_lr_rhiz, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF by Time preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% filter(Time == ".") %>%  -->
+<!--   ggplot(aes(x = interaction(Op3, contrast, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations") -->
+
+<!-- print(plt[["SF by Time preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+<!-- Contrasts (reverse) preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a table: -->
+
+<!-- ```{r sf_contrasts_pre_so_ubi_lr_rhiz_reverse} -->
+
+<!-- emmc <- rbind(contrast(emm, simple = "Op3", method = "revpairwise"), -->
+<!--               contrast(emm, simple = "Time", method = "consec")) -->
+<!-- emm_show(emmc) -->
+
+<!-- ``` -->
+
+<!-- Contrasts (reverse) preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval): -->
+
+<!-- ```{r sf_by_pre_so_ubi_lr_rhiz_reverse, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF Contrasts (reverse) by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% filter(Op3 == ".") %>%  -->
+<!--   ggplot(aes(x = interaction(Time, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations") -->
+
+<!-- print(plt[["SF Contrasts (reverse) by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+<!-- Contrasts "between time": -->
+
+<!-- ```{r sf_by_time_pre_so_ubi_lr_rhiz_reverse, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF Contrasts (reverse) by Time preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% filter(Time == ".") %>%  -->
+<!--   ggplot(aes(x = interaction(Op3, contrast, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations") -->
+
+<!-- print(plt[["SF Contrasts (reverse) by Time preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+<!-- ## SF $\Delta W$: Contrasts of contrasts -->
+
+<!-- Contrasts of contrasts preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a table: -->
+
+<!-- ```{r sf_contrasts_of_contrasts_pre_so_ubi_lr_rhiz} -->
+
+<!-- emmc1 <- contrast(emm, simple = "Op3", method = "pairwise") -->
+<!-- emmc <- contrast(emmc1, simple = "Time", method = "pairwise") -->
+<!-- emm_show(emmc) -->
+
+<!-- ``` -->
+
+<!-- Contrasts preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval): -->
+
+<!-- ```{r sf_by_pre_so_ubi_lr_rhiz_contrasts_of_contrasts, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF contrasts of contrasts by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% -->
+<!--   ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations") -->
+
+<!-- print(plt[["SF contrasts of contrasts by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+<!-- Contrasts of contrasts preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a table: -->
+
+<!-- ```{r sf_contrasts_of_contrasts_reverse_pre_so_ubi_lr_rhiz} -->
+
+<!-- emmc1 <- contrast(emm, simple = "Op3", method = "revpairwise") -->
+<!-- emmc <- contrast(emmc1, simple = "Time", method = "pairwise") -->
+<!-- emm_show(emmc) -->
+
+<!-- ``` -->
+
+<!-- Contrasts preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval): -->
+
+<!-- ```{r sf_by_pre_so_ubi_lr_rhiz_contrasts_of_contrasts_reverse, echo=FALSE, fig.width = 8} -->
+
+<!-- plt[["SF contrasts of contrasts (reverse) by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]] <- emmc %>% gather_emmeans_draws %>% -->
+<!--   ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>% -->
+<!--   my.stat_eye() + -->
+<!--   geom_hline(yintercept=0, linetype="dashed", color="black") + -->
+<!--   labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations") -->
+
+<!-- print(plt[["SF contrasts of contrasts (reverse) by preSO vs SO vs preUBI-[L,R] vs UBI-[L,R] vs UBI+Rhiz-[L,R]"]]) -->
+
+<!-- ``` -->
+
+# preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]
+
+```{r pre_adx_ubi_lr}
+
+dta_ADX_UBI <-
+  dta %>%
+  filter(TrtGroup %in% c("preADX", "ADX", "ADX+UBI")) %>%
+  ungroup %>% 
+  droplevels(.) %>%
+  mutate(
+    Op3 = paste0("ADX", ".", OperationSide),
+    Op3 = factor(Op3),
+    Time = ifelse(TrtGroup %in% c("preADX"), "Pre",
+                  ifelse(TrtGroup %in% c("ADX"), "Post", "Post+UBI")),
+    Time = factor(Time, c("Pre", "Post", "Post+UBI"))
+  )
+
+```
+
+The median (bars) and 95% HPDCI (whiskers) for SF $\Delta W$ data points. __NOT__ the uncertainties estimated by Bayesian model.
+
+```{r plot_bars_hpdci_pre_adx_ubi_lr}
+
+myname <- "SF 0-2 span=0.4 [preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]]"
+
+plt[["preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]] <- 
+  dta_ADX_UBI %>% 
+  group_by(Op3, Time, dT) %>% 
+  median_hdci(W, .width = 0.95) %>%
+  ungroup() %>%
+  ggplot(aes(x=interaction(Time, dT, sep=", ", drop=TRUE), y=W, fill=Op3)) + 
+    geom_bar(position=position_dodge(), stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]])
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2_pre_adx_ubi_lr, echo=FALSE}
+
+d.sum <- dta_ADX_UBI %>% 
+  arrange(Op3, Time) %>% 
+  group_by(Op3, Time) %>% 
+  summarise( rats = length(unique(RatID)) ) %>%
+  pivot_wider(names_from=c(Op3), values_from=rats)
+
+d.sum %>% flextable %>% fontsize(part = "header", size = 9) %>% autofit
+
+```
+
+## SF $\Delta W$: Bayesian regression, student family
+
+Prior predictive check
+
+```{r get_prior_pre_adx_ubi_lr, include=FALSE}
+
+get_prior(data = dta_ADX_UBI,
+  family = student,
+  W ~ 0 + Op3:Time + weight + repN + (1|RatID))
+
+```
+
+
+```{r sf_check_prior_pre_adx_ubi_lr}
+
+std.prior <- brm(
+  data = dta_ADX_UBI,
+  family = student,
+  W ~ 0 + Op3:Time + weight + repN + (1|RatID),
+  # W ~ 0 + Op3 + (1|RatID), # eliminate non-significant confounders
+    # W ~ 0 + Op3:dT + weight + repN + (1|RatID),
+  # W ~ 0 + Op3:dT + (1|RatID), # eliminate non-significant confounders
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(student_t(3, 0, 10), class = "sd"),
+            prior(normal(0, 10), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "v1_pre_adx_ubi_lr_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+
+cond_eff <- conditional_effects(std.prior,
+                                "Op3",
+                                method="fitted",
+                                conditions=make_conditions(dta_ADX_UBI, vars = c("Time"))
+                                )
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] prior check"]] <- plot(cond_eff,
+                                       points = TRUE,
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] +
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] prior pp_check"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] prior check"]])
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] prior pp_check"]])
+
+```
+
+Model fit and QC:
+
+```{r sf_model_summary_pre_adx_ubi_lr, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta = 0.99),
+                   control = list(max_treedepth = 15),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "v1_pre_adx_ubi_lr_model_summary_max_treedepth=15.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+print(plot(conditional_effects(std.fit), ask=FALSE, plot=FALSE))
+
+```
+
+## SF $\Delta W$: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r sf_pre_adx_ubi_lr_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] pp_check"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] pp_check"]])
+
+```
+
+Autocorrelations
+
+```{r sf_MCMC_ac_pre_adx_ubi_lr}
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ac"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ac"]])
+
+```
+
+## SF $\Delta W$: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r sf_emm_pre_adx_ubi_lr}
+
+emm <- emmeans(std.fit, ~ Op3*Time, transform = "response", nesting=NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r sf_emm2_pre_adx_ubi_lr, echo=FALSE, fig.width = 8}
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(x = interaction(Time, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] emm"]])
+
+```
+
+```{r points_sf_emm2_pre_adx_ubi_lr, echo=FALSE, fig.width=8}
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] emm with Data Points"]] <- 
+  plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] emm"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX_UBI %>%
+          group_by(RatID, Op3, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] emm with Data Points"]])
+
+```
+
+The bar and whiskers plot:
+
+```{r sf_bar_whiskers_pre_adx_ubi_lr, echo=FALSE}
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] bar whiskers"]] <- emm %>% gather_emmeans_draws %>% 
+  median_hdci(.width = 0.95) %>% 
+  ungroup() %>%
+  ggplot(aes(x = interaction(Time, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) + 
+    geom_bar(position=position_dodge(), aes(y=.value),stat="identity") +
+    geom_errorbar(aes(ymin=.lower, ymax=.upper),
+                  width=.2,   # Width of the error bars
+                  position=position_dodge(.9)) +
+    geom_hline(yintercept=0, linetype="dashed", color="black") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+    labs(title=myname, x="Medians and 95% HDCI", y="dW")
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] bar whiskers"]])
+
+```
+
+The ccdinterval plot with same data as above bars and whiskers:
+
+```{r sf_ccdfinterval_pre_adx_ubi_lr, echo=FALSE}
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ccdfinterval"]] <- emm %>% gather_emmeans_draws %>%
+  ggplot(aes(x = interaction(Time, Op3, sep=", ", drop=TRUE), y = .value, fill = Op3)) +
+  stat_ccdfinterval(point_interval = median_hdci, .width = 0.95,
+             shape = 16, point_color = "black", interval_color = "black", 
+             position="dodge", slab_color = NA) +
+    scale_fill_brewer(palette = "Set2") + 
+    scale_color_brewer(palette = "Dark2") +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
+  # coord_cartesian(ylim = c(0, 15.5), expand=FALSE) +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Estimated Marginal Medians and 95% HPDCI", y="dW")
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ccdfinterval"]])
+
+```
+
+```{r points_sf_ccdfinterval_pre_adx_ubi_lr, echo=FALSE, fig.width=8}
+
+plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ccdfinterval with Data Points"]] <- 
+  plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ccdfinterval"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.9, dodge.width = 0.9, seed = 2),
+      data = {
+        dta_ADX_UBI %>%
+          group_by(RatID, Op3, Time) %>%
+          summarise(.value = mean(W), .groups = "drop")
+      },
+      aes(y=.value))
+
+print(plt[["SF preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] ccdfinterval with Data Points"]])
+
+```
+
+## SF $\Delta W$: Contrasts
+
+Contrasts preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] as a table:
+
+```{r sf_contrasts_pre_adx_ubi_lr}
+
+emmc <- rbind(contrast(emm, simple = "Op3", method = "pairwise"),
+              contrast(emm, simple = "Time", method = "consec", reverse=TRUE))
+emm_show(emmc)
+
+```
+
+Contrasts preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval).
+
+Contrasts "between time":
+
+```{r sf_by_time_pre_adx_ubi_lr, echo=FALSE, fig.width = 8}
+
+plt[["SF by time preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(x = interaction(Op3, contrast, sep=", ", drop=TRUE), y = .value, fill = Op3)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF by time preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]])
+
+```
+
+Contrasts between operation side:
+
+```{r sf_by_pre_adx_ubi_lr, echo=FALSE, fig.width = 8}
+
+
+plt[["SF by preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]] <- emmc %>% emm_inorder %>% filter(Op3 == ".") %>% 
+  ggplot(aes(x = interaction(Time, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF by preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]])
+
+```
+
+## SF $\Delta W$: Contrasts of contrasts
+
+Contrasts of contrasts preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] as a table:
+
+```{r sf_contrasts_of_contrasts_pre_adx_ubi_lr}
+
+emmc <- contrast(emm, simple = "Op3", method = "pairwise")
+emmc <- contrast(emmc, simple = "Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts of contrasts preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R] as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval).
+
+Contrasts "between time":
+
+```{r sf_contrasts_of_contrasts_by_time_pre_adx_ubi_lr, echo=FALSE, fig.width = 8}
+
+plt[["SF Contrasts of contrasts preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(x = interaction(contrast1, contrast, sep=", ", drop=TRUE), y = .value, fill = contrast)) %>%
+  my.stat_eye() +
+  geom_hline(yintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, x="Sp, 0-2 sec", y="dW, between operations")
+
+print(plt[["SF Contrasts of contrasts preADX-[L,R] vs Post ADX-[L,R] vs Post ADX+UBI-[L,R]"]])
+
+```
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- "SF span=0.4 0-2 CI dW"
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```
+
+```{r notifyme, include=FALSE, results='hide'}
+
+notify(msg = "pptx and word")
+
+```

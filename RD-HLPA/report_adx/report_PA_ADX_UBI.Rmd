@@ -1,0 +1,2102 @@
+---
+title: "Bilateral adrenalectomy: Pa (Pre, after adx, ADX+UBI, hand, machine)"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "10/22/2021"
+output:
+ word_document: default
+ html_document:
+  toc: true
+  toc_float:
+   collapsed: false
+editor_options:
+ chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../BayesianPValue.R")
+```
+
+# Pa (Probability of postural asymmetry)
+
+Threshold 1 mm. <!-- , and threshold 2 as 2 mm. -->
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+rds_folder_name <- "../rds/bilateral_adrenalectomy/pa/"
+
+file_name <- "../data/SemiAutoADX-masterfile-210807.xlsx"
+sheet <- "MasterFile"
+
+my.seed <- 103592321 # reproducible Bayessian fit
+threshold <- 1.0001 # assymetry means > 0mm, i.e. no symmetric rats
+
+myname0 <- "Pa"
+
+data <- 
+  read_excel(file_name, sheet) %>%
+  select(RatID, Operation, `Operation side`, `Measuerment method`, `Treatment 1`, starts_with(c("PA1.", "PA2.", "PA3."))) %>%  
+  pivot_longer(
+    cols = PA1.1:PA3.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>%
+  mutate(RatID = factor(RatID),
+         Side = factor(`Operation side`, c("Left", "Right"), c("L", "R")),
+         Time = factor(Time, c("1", "2", "3"), c("0min", "15min", "180min")),
+         
+         Trt5 = ifelse(`Treatment 1` == "ADX", paste0(Side, `Treatment 1`), paste0(Side, Operation)),
+         Trt5 = replace(Trt5, Operation == "SO", "SO"),
+         Trt5 = factor(Trt5, c("SO", "LADX", "RADX", "LUBI", "RUBI")),
+         
+         MPA = abs(PA),
+         Sym = factor(MPA < threshold, c(TRUE, FALSE), c("Sym", "Asym"))
+         ) %>%
+  drop_na("PA") %>%
+  ungroup %>% droplevels(.)
+
+
+data_hand <-
+  data %>%
+  filter(`Measuerment method` == "Hand") %>% 
+  droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(`Measuerment method` == "MP") %>% 
+  droplevels(.)
+
+
+```
+
+\|PA\| $\leqslant$ 1mm (threshold) are defined as "Symmetric" (Sym) (\|PA\| - Average of all 6 measurements per rat)
+
+Hand data
+
+```{r input2, echo=FALSE}
+
+data_hand %>%
+  arrange(Trt5, Time) %>%
+  group_by(RatID, Trt5, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt5, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0min" = 0, "15min" = 0)) %>%
+  flextable(col_keys = c("Sym", "Trt5", "0min", "15min", "180min")) %>%
+  # bold(i = 1:4, j = 1:4, bold = TRUE) %>% 
+  autofit
+
+```
+
+# (Hand) Analyse ADX: Pre-surgery (L, R) and 15 min after the ADX (L, R)
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_adx_pre_after_data, echo=FALSE}
+
+data_hand_ADX_pre_after <- 
+  data_hand %>%
+  filter(`Treatment 1` == "ADX") %>%
+  filter(Time != "180min") %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_adx_pre_after_Hand")
+
+data_hand_ADX_pre_after %>% 
+  arrange(Side, Time) %>% 
+  group_by(Sym, Side, Time) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>% 
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for the Pre-Adx (L, R) and 15 min after the ADX (L, R) group
+
+```{r hand_adx_pre_after_pa_asym, echo=FALSE}
+
+dtaAsym <- data_hand_ADX_pre_after %>% 
+  arrange(Side, Time) %>% 
+  group_by(Side, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Side = fct_inorder(Side))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_adx_pre_after_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Side:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "adx_pre_after_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_adx_pre_after_pa_MCMC_ppcheck}
+
+plt[["hand ADX Pre and After Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand ADX Pre and After Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_adx_pre_after_pa_MCMC_ac}
+
+print( plt[["hand ADX Pre and After Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_adx_pre_after_pa_emm}
+
+emm <- emmeans(m.lat, ~ Side | Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_adx_pre_after_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand ADX Pre and After Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: L, R for pre and after ADX")
+
+print(plt[["Hand ADX Pre and After Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_adx_pre_after_pa_contrasts}
+
+emmc <- contrast(emm, simple="Side", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between Side as a median +- 95% HPDCI:
+
+```{r hand_adx_pre_after_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["hand ADX Pre and After Pa by Side"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: Side")
+print(plt[["hand ADX Pre and After Pa by Side"]])
+
+```
+Contrasts between time as a table:
+
+```{r hand_adx_pre_after_pa_contrasts_time}
+
+emmc <- contrast(emm, simple="Time", method = "pairwise", reverse = TRUE)
+emm_show(emmc)
+
+```
+
+Contrasts between Side as a median +- 95% HPDCI:
+
+```{r hand_adx_pre_after_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["hand ADX Pre and After Pa by Time"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: Side")
+print(plt[["hand ADX Pre and After Pa by Time"]])
+
+```
+
+# (Hand) Analyse ADX: 15 min after the ADX and ADX + 3 hrs after the brain surgery, L vs R 
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_adx_after_ubi_pa_input, echo=FALSE}
+
+data_hand_ADX_after_UBI <- 
+  data_hand %>%
+  filter(`Treatment 1` == "ADX") %>%
+  filter(Time != "0min") %>% 
+  droplevels(.) %>% 
+  mutate(Trt3 = ifelse(Time == "15min", "ADX", paste0(Side, "UBI")),
+         Trt3 = factor(Trt3, c("ADX", "LUBI", "RUBI")))
+
+myname <- paste0(myname0, "_adx_after_ubi_Hand")
+
+data_hand_ADX_after_UBI %>%
+  arrange(Trt3) %>%
+  group_by(RatID, Trt3) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt3) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Trt3), values_from=rats) %>%
+  replace_na(list("ADX" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for 15 min after the ADX and 3 hrs after the brain surgery, L vs R  group (ADX, L-UBI, R-UBI)
+
+```{r hand_adx_after_ubi_pa_asym, echo=FALSE}
+
+dtaAsym <- data_hand_ADX_after_UBI %>% 
+  arrange(Trt3) %>% 
+  group_by(Trt3) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt3 = fct_inorder(Trt3))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Trt3), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_adx_after_ubi_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt3,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "adx_after_ubi_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_adx_after_ubi_pa_MCMC_ppcheck}
+
+plt[["Hand ADX after vs ADX+[L, R]-UBI Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["Hand ADX after vs ADX+[L, R]-UBI Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_adx_after_ubi_pa_MCMC_ac}
+
+print( plt[["Hand ADX after vs ADX+[L, R]-UBI Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_adx_after_ubi_pa_emm}
+
+emm <- emmeans(m.lat, ~ Trt3, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_adx_after_ubi_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand ADX after vs ADX+[L, R]-UBI Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa ADX after vs ADX+[L, R]-UBI")
+
+print(plt[["Hand ADX after vs ADX+[L, R]-UBI Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r hand_adx_after_ubi_pa_contrasts}
+
+emmc <- contrast(emm, simple="Trt3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r hand_adx_after_ubi_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["Hand ADX after vs ADX+[L, R]-UBI Pa by Trt3"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: ADX after vs ADX+[L, R]-UBI")
+print(plt[["Hand ADX after vs ADX+[L, R]-UBI Pa by Trt3"]])
+
+```
+
+# (Hand) Analyse SO(L+R) vs ADX(L+R) vs UBI(L+R) at the point 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_so_adx_ubi_lr_pa_input, echo=FALSE}
+
+data_hand_180min <- 
+  data_hand %>% 
+  filter(Time == "180min") %>%
+  droplevels(.) %>% 
+  mutate(Trt3 = ifelse(`Treatment 1` == "ADX", "ADX", Operation),
+         Trt3 = factor(Trt3, c("SO", "ADX", "UBI"))) %>% 
+  ungroup %>% droplevels(.)
+  
+
+myname <- paste0(myname0, "_so_adx_ubi_lr_Hand")
+
+data_hand_180min %>%
+  arrange(Trt3) %>%
+  group_by(RatID, Trt3) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt3) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Trt3), values_from=rats) %>%
+  replace_na(list("SO" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO, ADX, UBI at the point 180 min group
+
+```{r hand_so_adx_ubi_lr_pa_asym, echo=FALSE}
+
+dtaAsym <- data_hand_180min %>% 
+  arrange(Trt3) %>% 
+  group_by(Trt3) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt3 = fct_inorder(Trt3))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Trt3), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_so_adx_ubi_lr_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt3,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_lr_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_so_adx_ubi_lr_pa_MCMC_ppcheck}
+
+plt[["Hand SO vs ADX vs UBI at the point 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["Hand SO vs ADX vs UBI at the point 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_so_adx_ubi_lr_pa_MCMC_ac}
+
+print( plt[["Hand SO vs ADX vs UBI at the point 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_so_adx_ubi_lr_pa_emm}
+
+emm <- emmeans(m.lat, ~ Trt3, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_lr_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX vs UBI at the point 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX vs UBI at the point 180 min")
+
+print(plt[["Hand SO vs ADX vs UBI at the point 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r hand_so_adx_ubi_lr_pa_contrasts}
+
+emmc <- contrast(emm, simple="Trt3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_lr_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX vs UBI at the point 180 min Pa by Trt3"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 180 min")
+print(plt[["Hand SO vs ADX vs UBI at the point 180 min Pa by Trt3"]])
+
+```
+
+# (Hand) Analyse SO(L+R) vs ADX(L+R) vs UBI(L+R) at the point 0min and 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_so_adx_ubi_lr_pa_input_0min_180min, echo=FALSE}
+
+data_hand_180min <- 
+  data_hand %>% 
+  filter(Time %in% c("0min", "180min")) %>%
+  droplevels(.) %>% 
+  mutate(Trt3 = ifelse(`Treatment 1` == "ADX", "ADX", Operation),
+         Trt3 = factor(Trt3, c("SO", "ADX", "UBI"))) %>% 
+  ungroup %>% droplevels(.)
+  
+
+myname <- paste0(myname0, "_so_adx_ubi_lr_Hand_0min_180min")
+
+data_hand_180min %>%
+  arrange(Trt3) %>%
+  group_by(RatID, Trt3, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt3, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0min" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO, ADX, UBI at the point 0min and 180 min group
+
+```{r hand_so_adx_ubi_lr_pa_asym_0min_180min, echo=FALSE}
+
+dtaAsym <- data_hand_180min %>% 
+  arrange(Trt3) %>% 
+  group_by(Trt3, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt3 = fct_inorder(Trt3))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_so_adx_ubi_lr_pa_model_summary_0min_180min}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt3:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_lr_Pa_model_summary_0min_180min.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_so_adx_ubi_lr_pa_MCMC_ppcheck_0min_180min}
+
+plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_so_adx_ubi_lr_pa_MCMC_ac_0min_180min}
+
+print( plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_so_adx_ubi_lr_pa_emm_0min_180min}
+
+emm <- emmeans(m.lat, ~ Trt3*Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_lr_pa_emm2_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, Time, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX vs UBI at the point 0min and 180 min")
+
+print(plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r hand_so_adx_ubi_lr_pa_contrasts_0min_180min}
+
+emmc <- rbind(contrast(emm, simple="Trt3", method = "pairwise"),
+              contrast(emm, simple="Time", method = "consec", reverse=TRUE))
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_lr_pa_by_side_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa by Trt3"]] <- emmc %>% emm_inorder %>% 
+  filter(Trt3 == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 0min and 180 min")
+print(plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa by Trt3"]])
+
+```
+
+Contrasts between time as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_lr_pa_by_side_0min_180min_time, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa by time"]] <- emmc %>% emm_inorder %>% 
+  filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Trt3, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 0min and 180 min")
+print(plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa by time"]])
+
+```
+
+## Pa: Contrasts of contrasts
+
+ Contrasts of contrasts as a table:
+
+```{r hand_so_adx_ubi_lr_pa_contrasts_of_contrasts_0min_180min}
+
+emmc <- contrast(emm, simple="Trt3", method = "pairwise")
+emmc <- contrast(emmc, simple="Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+ Contrasts of contrasts as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_lr_pa_by_side_0min_180min_contrasts_of_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(contrast1, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 0min and 180 min")
+print(plt[["Hand SO vs ADX vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]])
+
+```
+
+# (Hand) Analyse SO(L+R) vs ADX+(L-UBI) vs ADX+(R-UBI) vs L-UBI vs R-UBI at the point 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_so_adx_ubi_pa_input, echo=FALSE}
+
+data_hand_180min <- 
+  data_hand %>% 
+  filter(Time == "180min") %>%
+  droplevels(.) 
+
+myname <- paste0(myname0, "_so_adx_ubi_Hand")
+
+data_hand_180min %>%
+  arrange(Trt5) %>%
+  group_by(RatID, Trt5) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt5) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Trt5), values_from=rats) %>%
+  replace_na(list("SO" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO vs ADX+UBI vs UBI at the point 180 min group (SO, LADX, RADX, LUBI, RUBI)
+
+```{r hand_so_adx_ubi_pa_asym, echo=FALSE}
+
+dtaAsym <- data_hand_180min %>% 
+  arrange(Trt5) %>% 
+  group_by(Trt5) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt5 = fct_inorder(Trt5))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Trt5), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_so_adx_ubi_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt5,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_so_adx_ubi_pa_MCMC_ppcheck}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_so_adx_ubi_pa_MCMC_ac}
+
+print( plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_so_adx_ubi_pa_emm}
+
+emm <- emmeans(m.lat, ~ Trt5, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt5, drop=TRUE)), x = .value, fill = Trt5)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX+UBI vs UBI at the point 180 min")
+
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r hand_so_adx_ubi_pa_contrasts}
+
+emmc <- contrast(emm, simple="Trt5", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_pa_by_side_trt, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa by Trt5"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 180 min")
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 180 min Pa by Trt5"]])
+
+```
+
+# (Hand) Analyse SO(L+R) vs ADX+(L-UBI) vs ADX+(R-UBI) vs L-UBI vs R-UBI at the point 0min and 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_so_adx_ubi_pa_input_0min_180min, echo=FALSE}
+
+data_hand_180min <- 
+  data_hand %>% 
+  filter(Time %in% c("0min", "180min")) %>%
+  droplevels(.) 
+
+myname <- paste0(myname0, "_so_adx_ubi_Hand_0min_180min")
+
+data_hand_180min %>%
+  arrange(Trt5) %>%
+  group_by(RatID, Trt5, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt5, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0min" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO vs ADX+UBI vs UBI at the point 0min and 180 min group (SO, LADX, RADX, LUBI, RUBI)
+
+```{r hand_so_adx_ubi_pa_asym_0min_180min, echo=FALSE}
+
+dtaAsym <- data_hand_180min %>% 
+  arrange(Trt5, Time) %>% 
+  group_by(Trt5,Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt5 = fct_inorder(Trt5))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_so_adx_ubi_pa_model_summary_0min_180min}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt5:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_Pa_model_summary_0min_180min.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_so_adx_ubi_pa_MCMC_ppcheck_0min_180min}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_so_adx_ubi_pa_MCMC_ac_0min_180min}
+
+print( plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_so_adx_ubi_pa_emm_0min_180min}
+
+emm <- emmeans(m.lat, ~ Trt5*Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_pa_emm2_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt5, Time, sep=", ", drop=TRUE)), x = .value, fill = Trt5)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r hand_so_adx_ubi_pa_contrasts_0min_180min}
+
+emmc <- rbind(contrast(emm, simple="Trt5", method = "pairwise"),
+              contrast(emm, simple="Time", method = "consec", reverse = TRUE))
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_pa_by_side_0min_180min_trt, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by Trt5"]] <- emmc %>% emm_inorder %>% 
+  filter(Trt5 == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by Trt5"]])
+
+```
+Contrasts between time as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_pa_by_side_0min_180min_time, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by time"]] <- emmc %>% emm_inorder %>% 
+  filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Trt5, sep=", ", drop=TRUE)), x = .value, fill = Trt5)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by time"]])
+
+```
+
+## Pa: Contrasts of contrasts
+
+ Contrasts of contrasts as a table:
+
+```{r hand_so_adx_ubi_pa_contrasts_of_contrasts_0min_180min}
+
+emmc <- contrast(emm, simple="Trt5", method = "pairwise")
+emmc <- contrast(emmc, simple="Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+ Contrasts of contrasts as a median +- 95% HPDCI:
+
+```{r hand_so_adx_ubi_pa_by_side_0min_180min_contrasts_of_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(contrast1, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+print(plt[["Hand SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]])
+
+```
+
+# (Machine) Analyse ADX: Pre-surgery (L, R) and 15 min after the ADX (L, R)
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_adx_pre_after_data, echo=FALSE}
+
+data_machine_ADX_pre_after <- 
+  data_machine %>%
+  filter(`Treatment 1` == "ADX") %>%
+  filter(Time != "180min") %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_adx_pre_after_machine")
+
+data_machine_ADX_pre_after %>%
+  arrange(Side, Time) %>%
+  group_by(RatID, Side, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Side, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("15min" = 0)) %>% 
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for the Pre-ADX (L, R) and 15 min after the ADX (L, R) group
+
+```{r machine_adx_pre_after_pa_asym, echo=FALSE}
+
+dtaAsym <- data_machine_ADX_pre_after %>% 
+  arrange(Side, Time) %>% 
+  group_by(Side, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Side = fct_inorder(Side))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_adx_pre_after_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Side:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "adx_pre_after_Pa_model_summary_machine.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_adx_pre_after_pa_MCMC_ppcheck}
+
+plt[["machine ADX Pre and After Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine ADX Pre and After Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_adx_pre_after_pa_MCMC_ac}
+
+print( plt[["machine ADX Pre and After Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_adx_pre_after_pa_emm}
+
+emm <- emmeans(m.lat, ~ Side | Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_adx_pre_after_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine ADX Pre and After Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: L, R for pre and after ADX")
+
+print(plt[["machine ADX Pre and After Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_adx_pre_after_pa_contrasts}
+
+emmc <- contrast(emm, simple="Side", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between Side as a median +- 95% HPDCI:
+
+```{r machine_adx_pre_after_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine ADX Pre and After Pa by Side"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: Side")
+print(plt[["machine ADX Pre and After Pa by Side"]])
+
+```
+
+# (Machine) Analyse ADX: 15 min after the ADX and ADX + 3 hrs after the brain surgery, L vs R 
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_adx_after_ubi_pa_input, echo=FALSE}
+
+data_machine_ADX_after_UBI <- 
+  data_machine %>%
+  filter(`Treatment 1` == "ADX") %>%
+  filter(Time != "0min") %>% 
+  droplevels(.) %>% 
+  mutate(Trt3 = ifelse(Time == "15min", "ADX", paste0(Side, "UBI")),
+         Trt3 = factor(Trt3, c("ADX", "LUBI", "RUBI")))
+
+myname <- paste0(myname0, "_adx_after_ubi_machine")
+
+data_machine_ADX_after_UBI %>%
+  arrange(Trt3) %>%
+  group_by(RatID, Trt3) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt3) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Trt3), values_from=rats) %>%
+  replace_na(list("ADX" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for 15 min after the ADX and 3 hrs after the brain surgery, L vs R  group (ADX, L-UBI, R-UBI)
+
+```{r machine_adx_after_ubi_pa_asym, echo=FALSE}
+
+dtaAsym <- data_machine_ADX_after_UBI %>% 
+  arrange(Trt3) %>% 
+  group_by(Trt3) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt3 = fct_inorder(Trt3))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Trt3), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_adx_after_ubi_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt3,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "adx_after_ubi_Pa_model_summary_machine.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_adx_after_ubi_pa_MCMC_ppcheck}
+
+plt[["machine ADX after vs ADX+[L, R]-UBI Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["machine ADX after vs ADX+[L, R]-UBI Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_adx_after_ubi_pa_MCMC_ac}
+
+print( plt[["machine ADX after vs ADX+[L, R]-UBI Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_adx_after_ubi_pa_emm}
+
+emm <- emmeans(m.lat, ~ Trt3, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_adx_after_ubi_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine ADX after vs ADX+[L, R]-UBI Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa ADX after vs ADX+[L, R]-UBI")
+
+print(plt[["machine ADX after vs ADX+[L, R]-UBI Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r machine_adx_after_ubi_pa_contrasts}
+
+emmc <- contrast(emm, simple="Trt3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r machine_adx_after_ubi_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine ADX after vs ADX+[L, R]-UBI Pa by Trt3"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: ADX after vs ADX+[L, R]-UBI")
+print(plt[["machine ADX after vs ADX+[L, R]-UBI Pa by Trt3"]])
+
+```
+
+# (Machine) Analyse SO(L+R) vs ADX(L+R) vs UBI(L+R) at the point 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_so_adx_ubi_lr_pa_input, echo=FALSE}
+
+data_machine_180min <- 
+  data_machine %>% 
+  filter(Time == "180min") %>%
+  droplevels(.) %>% 
+  mutate(Trt3 = ifelse(`Treatment 1` == "ADX", "ADX", Operation),
+         Trt3 = factor(Trt3, c("SO", "ADX", "UBI"))) %>% 
+  ungroup %>% droplevels(.)
+  
+
+myname <- paste0(myname0, "_so_adx_ubi_lr_machine")
+
+data_machine_180min %>%
+  arrange(Trt3) %>%
+  group_by(RatID, Trt3) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt3) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Trt3), values_from=rats) %>%
+  replace_na(list("SO" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO vs ADX vs UBI at the point 180 min group
+
+```{r machine_so_adx_ubi_lr_pa_asym, echo=FALSE}
+
+dtaAsym <- data_machine_180min %>% 
+  arrange(Trt3) %>% 
+  group_by(Trt3) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt3 = fct_inorder(Trt3))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Trt3), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_so_adx_ubi_lr_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt3,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_lr_Pa_model_summary_machine.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_so_adx_ubi_lr_pa_MCMC_ppcheck}
+
+plt[["machine SO vs ADX vs UBI at the point 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["machine SO vs ADX vs UBI at the point 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_so_adx_ubi_lr_pa_MCMC_ac}
+
+print( plt[["machine SO vs ADX vs UBI at the point 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_so_adx_ubi_lr_pa_emm}
+
+emm <- emmeans(m.lat, ~ Trt3, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_lr_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX vs UBI at the point 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX vs UBI at the point 180 min")
+
+print(plt[["machine SO vs ADX vs UBI at the point 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r machine_so_adx_ubi_lr_pa_contrasts}
+
+emmc <- contrast(emm, simple="Trt3", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_lr_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX vs UBI at the point 180 min Pa by Trt3"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 180 min")
+print(plt[["machine SO vs ADX vs UBI at the point 180 min Pa by Trt3"]])
+
+```
+
+# (Machine) Analyse SO(L+R) vs ADX(L+R) vs UBI(L+R) at the point 0min and 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_so_adx_ubi_lr_pa_input_0min_180min, echo=FALSE}
+
+data_machine_180min <- 
+  data_machine %>% 
+  filter(Time %in% c("0min", "180min")) %>%
+  droplevels(.) %>% 
+  mutate(Trt3 = ifelse(`Treatment 1` == "ADX", "ADX", Operation),
+         Trt3 = factor(Trt3, c("SO", "ADX", "UBI"))) %>% 
+  ungroup %>% droplevels(.)
+  
+
+myname <- paste0(myname0, "_so_adx_ubi_lr_machine_0min_180min")
+
+data_machine_180min %>%
+  arrange(Trt3) %>%
+  group_by(RatID, Trt3, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt3, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0min" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO vs ADX vs UBI at the point 180 min group
+
+```{r machine_so_adx_ubi_lr_pa_asym_0min_180min, echo=FALSE}
+
+dtaAsym <- data_machine_180min %>% 
+  arrange(Trt3) %>% 
+  group_by(Trt3, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt3 = fct_inorder(Trt3))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_so_adx_ubi_lr_pa_model_summary_0min_180min}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt3:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_lr_Pa_model_summary_machine_0min_180min.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_so_adx_ubi_lr_pa_MCMC_ppcheck_0min_180min}
+
+plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_so_adx_ubi_lr_pa_MCMC_ac_0min_180min}
+
+print( plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_so_adx_ubi_lr_pa_emm_0min_180min}
+
+emm <- emmeans(m.lat, ~ Trt3*Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_lr_pa_emm2_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, Time, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX vs UBI at the point 0min and 180 min")
+
+print(plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r machine_so_adx_ubi_lr_pa_contrasts_0min_180min}
+
+emmc <- rbind(contrast(emm, simple="Trt3", method = "pairwise"),
+              contrast(emm, simple="Time", method = "consec", revers = TRUE))
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_lr_pa_by_side_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa by Trt3"]] <- emmc %>% emm_inorder %>%
+  filter(Trt3 == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 0min and 180 min")
+print(plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa by Trt3"]])
+
+```
+
+## Pa: Contrasts of contrasts
+
+ Contrasts of contrasts as a table:
+
+```{r machine_so_adx_ubi_lr_pa_contrasts_of_contrasts_0min_180min}
+
+emmc <- contrast(emm, simple="Trt3", method = "pairwise")
+emmc <- contrast(emmc, simple="Time", method = "pairwise")
+  
+emm_show(emmc)
+
+```
+
+ Contrasts of contrasts as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_lr_pa_by_side_0min_180min_contrasts_of_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(contrast1, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX vs UBI at the point 0min and 180 min")
+print(plt[["machine SO vs ADX vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]])
+
+```
+
+# (Machine) Analyse SO(L+R) vs ADX+(L-UBI) vs ADX+(R-UBI) vs L-UBI vs R-UBI at the point 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_so_adx_ubi_pa_input, echo=FALSE}
+
+data_machine_180min <- 
+  data_machine %>% 
+  filter(Time == "180min") %>%
+  droplevels(.) 
+
+myname <- paste0(myname0, "_so_adx_ubi_machine")
+
+data_machine_180min %>%
+  arrange(Trt5) %>%
+  group_by(RatID, Trt5) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt5) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Trt5), values_from=rats) %>%
+  replace_na(list("SO" = 0, "RUBI" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO vs ADX+UBI vs UBI at the point 180 min group (SO, LADX, RADX, LUBI, RUBI)
+
+```{r machine_so_adx_ubi_pa_asym, echo=FALSE}
+
+dtaAsym <- data_machine_180min %>% 
+  arrange(Trt5) %>% 
+  group_by(Trt5) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt5 = fct_inorder(Trt5))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Trt5), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_so_adx_ubi_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt5,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_Pa_model_summary_machine.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_so_adx_ubi_pa_MCMC_ppcheck}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_so_adx_ubi_pa_MCMC_ac}
+
+print( plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_so_adx_ubi_pa_emm}
+
+emm <- emmeans(m.lat, ~ Trt5, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt5, drop=TRUE)), x = .value, fill = Trt5)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX+UBI vs UBI at the point 180 min")
+
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r machine_so_adx_ubi_pa_contrasts}
+
+emmc <- contrast(emm, simple="Trt5", method = "revpairwise")
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_pa_by_side, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa by Trt5"]] <- emmc %>% emm_inorder %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 180 min")
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 180 min Pa by Trt5"]])
+
+```
+
+# (Machine) Analyse SO(L+R) vs ADX+(L-UBI) vs ADX+(R-UBI) vs L-UBI vs R-UBI at the point 0min and 180 min
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_so_adx_ubi_pa_input_0min_180min, echo=FALSE}
+
+data_machine_180min <- 
+  data_machine %>% 
+  filter(Time %in% c("0min", "180min")) %>%
+  droplevels(.) 
+
+myname <- paste0(myname0, "_so_adx_ubi_machine_0min_180min")
+
+data_machine_180min %>%
+  arrange(Trt5) %>%
+  group_by(RatID, Trt5, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Trt5, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("0min" = 0, "180min" = 0)) %>%
+  flextable %>% autofit
+
+```
+
+Trials and number of asymmetric rats for SO vs ADX+UBI vs UBI at the point 0 min and 180 min group (SO, LADX, RADX, LUBI, RUBI)
+
+```{r machine_so_adx_ubi_pa_asym_0min_180min, echo=FALSE}
+
+dtaAsym <- data_machine_180min %>% 
+  arrange(Trt5) %>% 
+  group_by(Trt5, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Trt5 = fct_inorder(Trt5))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>%
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_so_adx_ubi_pa_model_summary_0min_180min}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Trt5:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "so_adx_ubi_Pa_model_summary_machine_0min_180min.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_so_adx_ubi_pa_MCMC_ppcheck_0min_180min}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa pp_check"]] <- pp_check(m.lat, ndraws = 21)
+
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_so_adx_ubi_pa_MCMC_ac_0min_180min}
+
+print( plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_so_adx_ubi_pa_emm_0min_180min}
+
+emm <- emmeans(m.lat, ~ Trt5*Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_pa_emm2_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt5, Time, sep=", ", drop=TRUE)), x = .value, fill = Trt5)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between treatment as a table:
+
+```{r machine_so_adx_ubi_pa_contrasts_0min_180min}
+
+emmc <- rbind(contrast(emm, simple="Trt5", method = "pairwise"),
+              contrast(emm, simple="Time", method = "consec", reverse = TRUE))
+emm_show(emmc)
+
+```
+
+Contrasts between treatment as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_pa_by_side_0min_180min, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by Trt5"]] <- emmc %>% emm_inorder %>%
+  filter(Trt5 == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Time, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by Trt5"]])
+
+```
+
+Contrasts between time as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_pa_by_side_0min_180min_time, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by Time"]] <- emmc %>% emm_inorder %>%
+  filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(contrast, Trt5, sep=", ", drop=TRUE)), x = .value, fill = Trt5)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa by Time"]])
+
+```
+
+## Pa: Contrasts of contrasts
+
+Contrasts of contrasts as a table:
+
+```{r machine_so_adx_ubi_pa_contrasts_of_contrasts_0min_180min}
+
+emmc <- contrast(emm, simple="Trt5", method = "pairwise")
+emmc <- contrast(emmc, simple="Time", method = "pairwise")
+emm_show(emmc)
+
+```
+
+Contrasts of contrasts as a median +- 95% HPDCI:
+
+```{r machine_so_adx_ubi_pa_by_side_0min_180min_contrasts_of_contrasts, echo=FALSE, fig.width = 8}
+
+plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]] <- emmc %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(contrast1, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # coord_cartesian(ylim = c(-1, 1)) +
+  labs(title=myname, y="", x="Pa, contrast: SO vs ADX+UBI vs UBI at the point 0min and 180 min")
+print(plt[["machine SO vs ADX+UBI vs UBI at the point 0min and 180 min Pa Contrasts of contrasts"]])
+
+```
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0(myname0, "_SO_ADX_UBI_Hand_Machine")
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```
+
+
+```{r notifyme, include=FALSE, results='hide'}
+
+notify(msg = "pptx")
+
+```
+
+

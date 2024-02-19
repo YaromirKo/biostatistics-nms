@@ -1,0 +1,434 @@
+---
+title: "Bilateral rhizotomy. Analyse Pa UBI"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "10/27/2021"
+output:
+ word_document: default
+ html_document:
+  toc: true
+  toc_float:
+   collapsed: false
+editor_options:
+ chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../../BayesianPValue.R")
+```
+
+# Pa (Probability of postural asymmetry)
+
+Threshold 1 mm. <!-- , and threshold 2 as 2 mm. -->
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+rds_folder_name <- "../../rds/bilateral_rhizotomy/pa/"
+
+file_name <- "../../data/SemiAutoADX-masterfile-210807.xlsx"
+sheet <- "MasterFile"
+
+my.seed <- 103592321 # reproducible Bayessian fit
+threshold <- 1.0001 # assymetry means > 0mm, i.e. no symmetric rats
+
+myname0 <- "Pa"
+
+data <- 
+  read_excel(file_name, sheet) %>%
+  filter(`Treatment 1` == "Spinalization") %>% 
+  select(RatID, Operation, `Operation side`, `Measuerment method`, starts_with(c("PA3.", "PA4."))) %>% 
+  mutate(PA3.6 = as.numeric(PA3.6)) %>% 
+  filter(rowSums(is.na(.)) < 6) %>% 
+  pivot_longer(
+    cols = PA3.1:PA4.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>%
+  mutate(RatID = factor(RatID),
+         Side = factor(`Operation side`, c("Left", "Right"), c("L", "R")),
+         Time = factor(Time, c("3", "4"), c("3h0m", "3h15m")),
+         Trt3 = paste0(Side, Operation),
+         Trt3 = replace(Trt3, Operation == "SO", "SO"),
+         Trt3 = factor(Trt3, c("SO", "LUBI", "RUBI")),
+         MPA = abs(PA),
+         Sym = factor(MPA < threshold, c(TRUE, FALSE), c("Sym", "Asym"))) %>%
+  drop_na("PA", "Sym") %>% 
+  ungroup %>% droplevels(.)
+
+data_hand_UBI <-
+  data %>%
+  filter(`Measuerment method` == "Hand") %>%
+  filter(Operation == 'UBI') %>% 
+  droplevels(.)
+
+data_machine_UBI <-
+  data %>%
+  filter(`Measuerment method` == "MP") %>%
+  filter(Operation == 'UBI') %>% 
+  droplevels(.)
+
+```
+
+\|PA\| $\leqslant$ 1mm (threshold) are defined as "Symmetric" (Sym) (\|PA\| - Average of all 6 measurements per rat)
+
+# (Hand) Analyse L-UBI vs R-UBI
+
+## Pa: Model Overview
+
+The data points
+
+```{r hand_ubi_data, echo=FALSE}
+
+myname <- paste0(myname0, "_UBI_Hand")
+
+
+# data_hand_UBI %>% 
+#   arrange(Side, Time) %>% 
+#   group_by(Sym, Side, Time) %>% 
+#   summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+#   pivot_wider(names_from=c(Time), values_from=rats) %>%
+#   replace_na(list("3h0m" = 0)) %>% 
+#   flextable(col_keys = c("Sym", "Side", "3h0m", "3h15m")) %>% autofit
+
+data_hand_UBI %>%
+  arrange(Side, Time) %>%
+  group_by(RatID, Side, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Side, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("3h0m" = 0)) %>% 
+  flextable(col_keys = c("Sym", "Side", "3h0m", "3h15m")) %>% autofit
+
+```
+
+Trials and number of asymmetric rats for the UBI group
+
+```{r hand_ubi_pa_asym, echo=FALSE}
+
+dtaAsym <- data_hand_UBI %>% 
+  arrange(Side, Time) %>% 
+  group_by(Side, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Side = fct_inorder(Side))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r hand_ubi_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Side:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "ubi_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ubi_pa_MCMC_ppcheck}
+
+plt[["hand UBI Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["hand UBI Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r hand_ubi_pa_MCMC_ac}
+
+print( plt[["hand UBI Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r hand_ubi_pa_emm}
+
+emm <- emmeans(m.lat, ~ Side | Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r hand_ubi_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["Hand UBI Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: L-UBI, R-UBI")
+
+print(plt[["Hand UBI Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r hand_so_pa_contrasts}
+
+emmc <- rbind(contrast(emm, simple="Side", method = "revpairwise"),
+              contrast(emm, simple="Time", method = "consec"))
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ubi_pas_plot_side, echo=FALSE, fig.width = 8}
+
+plt[["UBI PAS by Side (hand)"]] <- emmc %>% emm_inorder %>% filter(Side == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast: Side")
+
+print(plt[["UBI PAS by Side (hand)"]])
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ubi_pas_plot_time, echo=FALSE, fig.width = 8}
+
+plt[["UBI PAS by Time (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast: Time")
+
+print(plt[["UBI PAS by Time (hand)"]])
+
+```
+
+# (Machine) Analyse L-UBI vs R-UBI
+
+## Pa: Model Overview
+
+The data points
+
+```{r machine_ubi_data, echo=FALSE}
+
+myname <- paste0(myname0, "_UBI_Machine")
+
+
+# data_machine_UBI %>% 
+#   arrange(Side, Time) %>% 
+#   group_by(Sym, Side, Time) %>% 
+#   summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+#   pivot_wider(names_from=c(Time), values_from=rats) %>%
+#   replace_na(list("3h0m" = 0)) %>% 
+#   flextable(col_keys = c("Sym", "Side", "3h0m", "3h15m")) %>% autofit
+
+data_machine_UBI %>%
+  arrange(Side, Time) %>%
+  group_by(RatID, Side, Time) %>%
+  summarise(Sym = factor(mean(MPA) < threshold, c(TRUE, FALSE), c("Sym", "Asym")), .groups = "drop") %>%
+  group_by(Sym, Side, Time) %>%
+  summarise(rats = length(unique(RatID)), .groups = "keep") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>%
+  replace_na(list("3h0m" = 0)) %>% 
+  flextable(col_keys = c("Sym", "Side", "3h0m", "3h15m")) %>% autofit
+
+```
+
+Trials and number of asymmetric rats for the UBI group
+
+```{r machine_ubi_pa_asym, echo=FALSE}
+
+dtaAsym <- data_machine_UBI %>% 
+  arrange(Side, Time) %>% 
+  group_by(Side, Time) %>% 
+  mutate( Asym = as.integer(factor(Sym, c("Sym", "Asym"))) - 1 ) %>%
+  summarise(nAsym = as.integer(sum(Asym)), 
+            nTrials = n(), 
+            .groups = "drop") %>%
+  mutate(Side = fct_inorder(Side))
+
+# dta5050 <- dtaAsym %>%
+#   ungroup() %>% group_by(Time) %>%
+#   summarise( Side = "50/50",
+#              nAsym = as.integer( round(max(nTrials)/2 - 0.1)),
+#              nTrials = as.integer( 2*nAsym ),
+#              .groups = "drop" )
+# 
+# dta5050 <- bind_rows(dta5050, dtaAsym) %>%
+#   mutate(Side = fct_inorder(Side))
+
+dtaAsym %>% 
+  pivot_longer(cols=c(nAsym, nTrials), names_to = "counts") %>%
+  pivot_wider(names_from=c(Time), values_from=c(value)) %>% 
+  flextable %>% autofit
+
+```
+
+Model fit and QC:
+
+```{r machine_ubi_pa_model_summary}
+
+m.lat <- brm(
+  data = dtaAsym, 
+  family = binomial,
+  nAsym | trials(nTrials) ~ 0 + Side:Time,
+  prior = c(prior(normal(0, 1), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4, 
+  sample_prior = "yes",
+  file = paste0(rds_folder_name, "machine_ubi_Pa_model_summary.rds"),
+  file_refit = "on_change")
+
+summary(m.lat)
+
+```
+
+## Pa: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_ubi_pa_MCMC_ppcheck}
+
+plt[["machine UBI Pa pp_check"]] <- pp_check(m.lat, ndraws = 11)
+
+print(plt[["machine UBI Pa pp_check"]])
+```
+
+Autocorrelations
+
+```{r machine_ubi_pa_MCMC_ac}
+
+print( plt[["machine UBI Pa ac"]] <- stan_ac(m.lat$fit) )
+
+```
+
+## Pa: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table. P-values are for Pa \> 0.
+
+```{r machine_ubi_pa_emm}
+
+emm <- emmeans(m.lat, ~ Side | Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Plot of medians +- 95% HPDCI:
+
+```{r machine_ubi_pa_emm2, echo=FALSE, fig.width = 8}
+
+plt[["machine UBI Pa emm"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0.5, linetype="dashed", color="black") +
+  coord_cartesian(xlim = c(0, 1)) +
+  labs(title=myname, y="", x="Pa: L-UBI, R-UBI")
+
+print(plt[["machine UBI Pa emm"]])
+
+```
+
+## Pa: Contrasts
+
+Contrasts between Side as a table:
+
+```{r machine_so_pa_contrasts}
+
+emmc <- rbind(contrast(emm, simple="Side", method = "revpairwise"),
+              contrast(emm, simple="Time", method = "consec"))
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ubi_pas_plot_side, echo=FALSE, fig.width = 8}
+
+plt[["UBI PAS by Side (machine)"]] <- emmc %>% emm_inorder %>% filter(Side == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast: Side")
+
+print(plt[["UBI PAS by Side (machine)"]])
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ubi_pas_plot_time, echo=FALSE, fig.width = 8}
+
+plt[["UBI PAS by Time (machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="Pa, contrast: Time")
+
+print(plt[["UBI PAS by Time (machine)"]])
+
+```
+
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0(myname0, "_UBI_Hand_Machine")
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```

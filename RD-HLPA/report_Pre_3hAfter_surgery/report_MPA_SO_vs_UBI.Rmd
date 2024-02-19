@@ -1,0 +1,918 @@
+---
+title: "MPA UBI vs SO (L, R; hand, machine)"
+author: "Yaromir Kobikov <kobikov.yaromir@gmail.com>"
+date: "9/23/2021"
+output:
+ word_document: default
+ html_document:
+  toc: true
+  toc_float:
+   collapsed: false
+editor_options:
+ chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+source("../BayesianPValue.R")
+```
+
+# MPA (Magnitude of Postural asymmetry)
+
+Values in “+”.
+
+# Read Data
+
+Read from Excel file.
+
+```{r input}
+
+rds_folder_name <- "../rds/0vs180/v1/mpa/"
+
+file_name <- "../data/SemiAutoADX-masterfile-210807.xlsx"
+sheet <- "MasterFile"
+
+my.seed <- 103592321 # reproducible Bayessian fit
+
+myname0 <- "MPA"
+
+data <- 
+  read_excel(file_name, sheet) %>%
+  filter(`Treatment 1` == "Spinalization") %>% 
+  select(RatID, Operation, `Operation side`, `Measuerment method`, starts_with(c("PA1.", "PA3."))) %>% 
+  mutate(PA3.6 = as.numeric(PA3.6)) %>%   
+  pivot_longer(
+    cols = PA1.1:PA3.6,
+    names_to = c("Time"),
+    names_pattern = "PA(.)",
+    values_to = "PA"
+  ) %>%
+  mutate(RatID = factor(RatID),
+         Side = factor(`Operation side`, c("Left", "Right"), c("L", "R")),
+         Time = factor(Time, c("1", "3"), c("0min", "180min")),
+         Trt3 = paste0(Side, Operation),
+         Trt3 = replace(Trt3, Operation == "SO", "SO"),
+         Trt3 = factor(Trt3, c("SO", "LUBI", "RUBI")),
+         MPA = abs(PA),
+         MPA.int = MPA / 0.5) %>%
+  drop_na("PA") %>% 
+  ungroup %>% droplevels(.)
+
+data_hand <-
+  data %>%
+  filter(`Measuerment method` == "Hand") %>% 
+  droplevels(.)
+
+data_machine <-
+  data %>%
+  filter(`Measuerment method` == "MP") %>% 
+  droplevels(.)
+
+```
+
+The group sizes are (distinct rats only, same rats with different stimulation locations are counted as duplicates)
+
+```{r input2, echo=FALSE}
+
+data %>% 
+  arrange(Trt3, Time) %>% 
+  group_by(Trt3, Time, `Measuerment method`) %>% 
+  summarise(rats = length(unique(RatID)), .groups = "drop") %>%
+  pivot_wider(names_from=c(Time), values_from=rats) %>% 
+  flextable %>% autofit
+
+```
+
+# (Hand) Analyse Sham: L-SO vs R-SO surgery
+
+If "Left SO" is not significantly different from "Right SO" group we can merge them into single "SO" group to test against "UBI".
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r hand_so_mpa_check_prior}
+
+data_hand_SO <- 
+  data_hand %>%
+  filter(Operation == 'SO') %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_SO_Hand")
+
+std.prior <- brm(
+  data = data_hand_SO,
+  family = student,
+  MPA ~ 0 + Time:Side + (1|RatID),
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(normal(0, 3), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Side", 
+                                method="fitted", 
+                                conditions=make_conditions(data_hand_SO, vars = c("Time")))
+
+plt[["SO MPA prior vs data (hand)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SO MPA prior pp_check (hand)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SO MPA prior vs data (hand)"]])
+print(plt[["SO MPA prior pp_check (hand)"]])
+
+```
+
+Model fit and QC:
+
+```{r hand_so_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   control = list(adapt_delta = 0.99),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_model_summary.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_so_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SO MPA pp_check (hand)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SO MPA pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r hand_so_mpa_MCMC_ac}
+
+plt[["SO MPA ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SO MPA ac (hand)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r hand_so_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Side*Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_so_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA emm (hand)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm) SO")
+
+print(plt[["SO MPA emm (hand)"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_hand_so_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["SO MPA emm (hand) with Data Points"]] <- 
+  plt[["SO MPA emm (hand)"]] +
+    geom_point(
+      pch = 4,
+      position = position_nudge(y=0.15),
+      data = {
+        data_hand_SO %>%
+          group_by(RatID, Time, Side) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value))
+
+print(plt[["SO MPA emm (hand) with Data Points"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r hand_so_mpa_contrasts}
+
+emmc <- rbind(contrast(emm, simple = "Side", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec"))
+
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_so_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA by Side (hand)"]] <- emmc %>% emm_inorder %>% filter(Side == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: L-SO vs R-SO")
+
+print(plt[["SO MPA by Side (hand)"]])
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_so_mpa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA by Time (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["SO MPA by Time (hand)"]])
+
+```
+
+Contrasts BI vs SS as a table:
+
+```{r hand_so_mpa_contrasts_0_180}
+
+emmc <- rbind(contrast(emm, simple = "Side", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec", reverse = TRUE))
+
+emm_show(emmc)
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_so_mpa_by_time_0_180, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA by Time 0min - 180min (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["SO MPA by Time 0min - 180min (hand)"]])
+
+```
+
+
+
+Since "Left SO" is not significantly different from "Right SO" we can merge all sham rats into single "SO" group to test against "Left UBI" and "Right UBI".
+
+# (Hand) Analyse L-UBI vs R-UBI vs SO(L+R)
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r hand_ubi_mpa_check_prior}
+
+myname <- paste0(myname0, "_UBI_SO_Hand")
+
+std.prior <- brm(
+  data = data_hand,
+  family = student,
+  MPA ~ 0 + Time:Trt3 + (1|RatID),
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(normal(0, 3), class = "b")),
+  # control = list(adapt_delta=0.9),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "ubi_check_prior.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Trt3", 
+                                method="fitted", 
+                                conditions=make_conditions(data_hand, vars = c("Time")))
+
+plt[["UBI MPA prior vs data (hand)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["UBI MPA prior pp_check (hand)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["UBI MPA prior vs data (hand)"]])
+print(plt[["UBI MPA prior pp_check (hand)"]])
+
+```
+
+Model fit and QC:
+
+```{r hand_ubi_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta=0.95),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "ubi_model_summary.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r hand_ubi_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["UBI MPA pp_check (hand)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["UBI MPA pp_check (hand)"]])
+
+```
+
+Autocorrelations
+
+```{r hand_ubi_mpa_MCMC_ac}
+
+plt[["UBI MPA ac (hand)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["UBI MPA ac (hand)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r hand_ubi_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Trt3*Time, transform = "response", nesting = NULL)
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ubi_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA emm (hand)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, Time, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept = 0, linetype="dashed", color="black") +
+  # geom_vline(xintercept = threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept = -threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm), UBI")
+
+print(plt[["UBI MPA emm (hand)"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_hand_ubi_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["UBI MPA emm (hand) with Data Points"]] <- 
+  plt[["UBI MPA emm (hand)"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(dodge.width = 0.6, jitter.width = 0.6, seed = 2),
+      data = {
+        data_machine %>%
+          group_by(RatID, Time, Trt3) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value, y = as.numeric(fct_rev(interaction(Trt3, Time, sep=", ", drop=TRUE)))+0.2))
+
+print(plt[["UBI MPA emm (hand) with Data Points"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ubi_mpa_contrasts}
+
+emmc <- rbind(contrast(emm, simple = "Trt3", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec"))
+
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ubi_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA by Trt3 (hand)"]] <- emmc %>% emm_inorder %>% filter(Trt3 == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: SO vs RUBI VS LUBI")
+
+print(plt[["UBI MPA by Trt3 (hand)"]])
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ubi_mpa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA by Time (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Trt3, contrast, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["UBI MPA by Time (hand)"]])
+
+```
+
+Contrasts BI vs SS as a table:
+
+```{r hand_ubi_mpa_contrasts_0_180}
+
+emmc <- rbind(contrast(emm, simple = "Trt3", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec", reverse = TRUE))
+
+emm_show(emmc)
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r hand_ubi_mpa_by_time_0_180, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA by Time 0min - 180min (hand)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Trt3, contrast, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["UBI MPA by Time 0min - 180min (hand)"]])
+
+```
+
+# (Machine) Analyse Sham: L-SO vs R-SO surgery
+
+If "Left SO" is not significantly different from "Right SO" group we can merge them into single "SO" group to test against "UBI".
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r machine_so_mpa_check_prior}
+
+data_machine_SO <- 
+  data_machine %>%
+  filter(Operation == 'SO') %>% 
+  droplevels(.)
+
+myname <- paste0(myname0, "_SO_MP")
+
+std.prior <- brm(
+  data = data_machine_SO,
+  family = student,
+  MPA ~ 0 + Time:Side + (1|RatID),
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(normal(0, 3), class = "b")),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "so_check_prior_machine.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Side", 
+                                method="fitted", 
+                                conditions=make_conditions(data_machine_SO, vars = c("Time")))
+
+plt[["SO MPA prior vs data (Machine)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["SO MPA prior pp_check (Machine)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["SO MPA prior vs data (Machine)"]])
+print(plt[["SO MPA prior pp_check (Machine)"]])
+
+```
+
+Model fit and QC:
+
+```{r machine_so_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   control = list(adapt_delta=0.999),
+                   seed = my.seed, 
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "so_model_summary_machine.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_so_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["SO MPA pp_check (Machine)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["SO MPA pp_check (Machine)"]])
+
+```
+
+Autocorrelations
+
+```{r machine_so_mpa_MCMC_ac}
+
+plt[["SO MPA ac (Machine)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["SO MPA ac (Machine)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r machine_so_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Side:Time, transform = "response", nesting = NULL)
+
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_so_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA emm (Machine)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)), x = .value, fill = Side)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  # geom_vline(xintercept=threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept=-threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm)")
+
+print(plt[["SO MPA emm (Machine)"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_machine_so_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["SO MPA emm (Machine) with Data Points"]] <- 
+  plt[["SO MPA emm (Machine)"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(jitter.width = 0.6, seed = 2),
+      data = {
+        data_machine_SO %>%
+          group_by(RatID, Time, Side) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value, y = as.numeric(fct_rev(interaction(Side, Time, sep=", ", drop=TRUE)))+0.2))
+
+print(plt[["SO MPA emm (Machine) with Data Points"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r machine_so_mpa_contrasts}
+
+emmc <- rbind(contrast(emm, simple = "Side", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec"))
+
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_so_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA by Side (Machine)"]] <- emmc %>% emm_inorder %>% filter(Side == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: L-SO vs R-SO")
+
+print(plt[["SO MPA by Side (Machine)"]])
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_so_mpa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA by Time (Machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["SO MPA by Time (Machine)"]])
+
+```
+
+Contrasts BI vs SS as a table:
+
+```{r machine_so_mpa_contrasts_0_180}
+
+emmc <- rbind(contrast(emm, simple = "Side", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec", reverse = TRUE))
+
+emm_show(emmc)
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_so_mpa_by_time_0_180, echo=FALSE, fig.width = 8}
+
+plt[["SO MPA by Time 0min - 180min (Machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Side, contrast, sep=", ", drop=TRUE)), x = .value, fill = contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["SO MPA by Time 0min - 180min (Machine)"]])
+
+```
+
+Since "Left SO" is not significantly different from "Right SO" we can merge all sham rats into single "SO" group to test against "Left UBI" and "Right UBI".
+
+# (Machine) Analyse L-UBI vs R-UBI vs SO(L+R)
+
+## MPA: Student Model
+
+Prior predictive check
+
+```{r Machine_ubi_mpa_check_prior}
+
+myname <- paste0(myname0, "_UBI_SO_MP")
+
+std.prior <- brm(
+  data = data_machine,
+  family = student,
+  MPA ~ 0 + Time:Trt3 + (1|RatID),
+  prior = c(prior(student_t(3, 0, 10), class = "sigma"),
+            prior(normal(0, 3), class = "b")),
+  # control = list(adapt_delta=0.9),
+  seed = my.seed, 
+  chains = my.cores, 
+  cores = my.cores, 
+  iter = 4e4,
+  sample_prior = "only",
+  file = paste0(rds_folder_name, "ubi_check_prior_machine.rds"),
+  file_refit = "on_change"
+)
+
+cond_eff <- conditional_effects(std.prior, 
+                                "Trt3", 
+                                method="fitted", 
+                                conditions=make_conditions(data_machine, vars = c("Time")))
+
+plt[["UBI MPA prior vs data (machine)"]] <- plot(cond_eff, 
+                                       points = TRUE, 
+                                       point_args = list(width = 0.1, shape="o", col="red"),
+                                       plot=FALSE)[[1]] + 
+                                  geom_hline(yintercept=0, linetype="dashed", color="black")
+
+set.seed(2)
+plt[["UBI MPA prior pp_check (machine)"]] <- pp_check(std.prior, ndraws = 11)
+
+print(cond_eff[[1]])
+print(plt[["UBI MPA prior vs data (machine)"]])
+print(plt[["UBI MPA prior pp_check (machine)"]])
+
+```
+
+Model fit and QC:
+
+```{r machine_ubi_mpa_model_summary, echo=FALSE, fig.width = 10}
+
+std.fit <-  update(std.prior, 
+                   sample_prior = "yes",
+                   # control = list(adapt_delta=0.95),
+                   seed = my.seed,
+                   cores = my.cores,
+                   file = paste0(rds_folder_name, "ubi_model_summary_machine.rds"),
+                   file_refit = "on_change")
+summary(std.fit)
+
+```
+
+## MPA: MCMC conversion diagnostics
+
+Posterior predictive check
+
+```{r machine_ubi_mpa_MCMC_ppcheck}
+
+set.seed(2) # reproducible pp_check
+
+plt[["UBI MPA pp_check (machine)"]] <- pp_check(std.fit, ndraws = 21)
+
+print(plt[["UBI MPA pp_check (machine)"]])
+
+```
+
+Autocorrelations
+
+```{r machine_ubi_mpa_MCMC_ac}
+
+plt[["UBI MPA ac (machine)"]] <- stan_ac(std.fit$fit)
+
+print(plt[["UBI MPA ac (machine)"]])
+
+```
+
+## MPA: Estimated model marginals
+
+Estimated model medians +- 95% HPDCI (HPDCI = highest posterior density continuous interval) as a table:
+
+```{r machine_ubi_mpa_emm}
+
+emm <- emmeans(std.fit, ~ Trt3*Time, transform = "response", nesting = NULL)
+
+emm_show(emm)
+
+```
+
+Estimated model means as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ubi_mpa_emm_plot, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA emm (machine)"]] <- emm %>% emm_inorder %>%
+  ggplot(aes(y = fct_rev(interaction(Trt3, Time, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept = 0, linetype="dashed", color="black") +
+  # geom_vline(xintercept = threshold, linetype="dashed", color="black") +
+  # geom_vline(xintercept = -threshold, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA (mm), UBI")
+
+print(plt[["UBI MPA emm (machine)"]])
+
+```
+
+Estimated model means as a median +- 95% HPDCI ("x" - mean values of measurements for each rat)
+
+```{r points_machine_ubi_mpa_emm_plot, echo=FALSE, fig.width=8}
+
+plt[["UBI MPA emm (machine) with Data Points"]] <- 
+  plt[["UBI MPA emm (machine)"]] +
+    geom_point(
+      pch = 4,
+      position = position_jitterdodge(dodge.width = 0.6, jitter.width = 0.6, seed = 2),
+      data = {
+        data_machine %>%
+          group_by(RatID, Time, Trt3) %>%
+          summarise(.value = mean(MPA), .groups = "drop")
+      },
+      aes(x=.value, y = as.numeric(fct_rev(interaction(Trt3, Time, sep=", ", drop=TRUE)))+0.2))
+
+print(plt[["UBI MPA emm (machine) with Data Points"]])
+
+```
+
+## MPA: Contrasts
+
+Contrasts BI vs SS as a table:
+
+```{r machine_ubi_mpa_contrasts}
+
+emmc <- rbind(contrast(emm, simple = "Trt3", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec"))
+
+emm_show(emmc)
+
+```
+
+Contrasts BI vs SS as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ubi_mpa_plot, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA by Trt3 (machine)"]] <- emmc %>% emm_inorder %>% filter(Trt3 == ".") %>%
+  ggplot(aes( y = fct_rev(interaction(Time, contrast, sep=", ", drop=TRUE)), x=.value, fill=contrast)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: SO vs RUBI VS LUBI")
+
+print(plt[["UBI MPA by Trt3 (machine)"]])
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ubi_mpa_by_time, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA by Time (machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Trt3, contrast, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["UBI MPA by Time (machine)"]])
+
+```
+
+Contrasts BI vs SS as a table:
+
+```{r machine_ubi_mpa_contrasts_0_180}
+
+emmc <- rbind(contrast(emm, simple = "Trt3", method = "revpairwise"),
+              contrast(emm, simple = "Time", method = "consec", reverse = TRUE))
+
+emm_show(emmc)
+
+```
+
+Contrasts "between time" as a median +- 95% HPDCI (HPDCI = highest posterior density continuous interval):
+
+```{r machine_ubi_mpa_by_time_0_180, echo=FALSE, fig.width = 8}
+
+plt[["UBI MPA by Time 0min - 180min (machine)"]] <- emmc %>% emm_inorder %>% filter(Time == ".") %>% 
+  ggplot(aes(y = fct_rev(interaction(Trt3, contrast, sep=", ", drop=TRUE)), x = .value, fill = Trt3)) %>%
+  my.stat_eyeh() +
+  geom_vline(xintercept=0, linetype="dashed", color="black") +
+  labs(title=myname, y="", x="MPA in mm, contrast: Time")
+
+print(plt[["UBI MPA by Time 0min - 180min (machine)"]])
+
+```
+
+# Editable PowerPoint plots generated...
+
+```{r pptx, message=TRUE, warning=TRUE, include=FALSE, results='hide'}
+
+myname <- paste0(myname0, "_UBI_SO_Hand_Machine")
+
+doc <- read_pptx()
+
+for(nm in names(plt)) {
+  doc <- doc %>%
+    add_slide(layout = "Title and Content", master = "Office Theme") %>%
+    ph_with(value = rvg::dml(ggobj = plt[[nm]]),
+          location = ph_location_type(type = "body"
+                                      #, width=S_width, height=S_height
+                                      ),
+          bg = "transparent" ) %>%
+    ph_with(value = nm,
+          location = ph_location_type(type = "title") )
+}
+doc %>% print(target = paste0(myname,".pptx"))
+
+```
