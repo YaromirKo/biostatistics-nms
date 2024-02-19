@@ -68,7 +68,7 @@ data_SpinalC <-
               values_from = !c("Rat.ID", "Module", "Segment", "Trt", "Design")) #####
 
 data_groups_all <-
-  file.path(main_dir,"data/raw_groups.xlsx") %>%
+  file.path(main_dir,"data/groups.xlsx") %>%
   read_excel(sheet = "all_groups", .name_repair = "universal", na = c("", "NA", "NULL"))
 ```
 
@@ -296,8 +296,6 @@ if(!file.exists(groups_results)) {
 
   data_groups_all_sorted <-
     data_groups_all %>%
-    filter(analyze == "yes") %>%
-    select(-analyze) %>%
     group_by(Segment) %>%
     mutate(BH.pStr = p.adjust(pval.CorStr, method = "BH"),
            BH.pProp = p.adjust(pval.CorProp, method = "BH"))
@@ -314,7 +312,7 @@ if(!file.exists(groups_results)) {
 # Visualizing data by groups
 
 ```{r list_data_by_groups, include=FALSE}
-groups <- data_groups_all %>% filter(analyze == 'yes')
+groups <- data_groups_all
 data.groups.list <- corByGroup(df = data_S.H[ , order(names(data_S.H))], indices = 1:nrow(data_S.H[ , order(names(data_S.H))]), dg = groups, verbose = TRUE)
 ```
 
