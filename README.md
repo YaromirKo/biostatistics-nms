@@ -17,3 +17,7 @@ spinal cord through the humoral pathway. The coordination was ipsilateral and pe
 suggest that the neuroendocrine system that conveys left-right side-specific hormonal messages from injured brain is
 bipartite, contributes to contralateral neurological deficits through asymmetric neural mechanisms, and enables
 ipsilateral coordination of molecular processes across neural areas along the neuraxis.
+
+
+**Submitted to the [Function journal](https://academic.oup.com/function/article/5/4/zqae013/7629141)**  
+**Authors**: Hiroyuki Watanabe, Yaromir Kobikov, *et al.*
