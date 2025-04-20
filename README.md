@@ -21,3 +21,111 @@ ipsilateral coordination of molecular processes across neural areas along the ne
 
 **Submitted to the [Function journal](https://academic.oup.com/function/article/5/4/zqae013/7629141)**  
 **Authors**: Hiroyuki Watanabe, Yaromir Kobikov, *et al.*
+
+
+## Processing Contralateral Effects of Brain Injury
+
+This repository contains an R-based biostatistical analysis pipeline to study how unilateral brain lesions produce side-specific endocrine responses via humoral pathways.
+
+---
+
+## Table of Contents
+- [Features](#features)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Project Structure](#project-structure)
+- [Methods](#methods)
+- [Results](#results)
+- [Contributing](#contributing)
+- [License](#license)
+- [Citation](#citation)
+
+---
+
+## Features
+- Data preprocessing and cleaning  
+- Bayesian multilevel modeling of gene expression  
+- Co-expression network analysis  
+- Publication-ready visualizations  
+
+---
+
+## Installation
+1. **Prerequisites**  
+   - R  
+   - C++ toolchain for Stan (for Bayesian modeling)  
+2. **Clone the repository**  
+   ```bash
+   git clone https://github.com/YaromirKo/biostatistics-nms.git
+   cd biostatistics-nms
+   ```
+3. **Install R packages**  
+   ```r
+   install.packages(c(
+     "tidyverse",
+     "brms",
+     "rstan",
+     "igraph",
+     "cowplot",
+     "readxl"
+   ))
+   ```
+
+---
+
+## Usage
+1. Open the RStudio project file:  
+   ```
+   biostatistics-nms.Rproj
+   ```
+2. Run the main analysis script:  
+   ```r
+   source("nms-genes-analysis/analysis.R")
+   ```
+3. View outputs in the `results/` folder.
+
+---
+
+## Project Structure
+```
+├── data/                  # Raw and processed data files  
+├── nms-genes-analysis/    # R scripts for gene expression analysis  
+├── results/               # Figures, tables, and network outputs  
+├── biostatistics-nms.Rproj # RStudio project file  
+├── README.md  
+└── LICENSE  
+```
+
+---
+
+## Methods
+- **Data Loading**: Read and clean expression data with `readxl` and `tidyverse`.  
+- **Model Fitting**: Fit Bayesian models using `brms` and `rstan`.  
+- **Network Analysis**: Construct and analyze co-expression networks with `igraph`.  
+
+---
+
+## Results
+- **Figures**: Side-specific expression plots (`.png`, `.pdf`)  
+- **Tables**: Posterior summaries and network metrics (`.csv`)  
+- **Reports**: HTML or Word reports via `rmarkdown`.  
+
+---
+
+## Contributing
+1. Fork the repo  
+2. Create a branch: `git checkout -b feature/YourFeature`  
+3. Commit & push: `git push origin feature/YourFeature`  
+4. Open a Pull Request  
+
+---
+
+## License
+This project is licensed under the MIT License. See `LICENSE` for details.
+
+---
+
+## Citation
+If you use this work, please cite:  
+> Watanabe H., Kobikov Y., et al. (2025). Bipartite left–right sided endocrine system: processing contralateral effects of brain injury. *Function*.
+
